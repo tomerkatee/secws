@@ -34,16 +34,114 @@ static struct klist logs;
 static rule_t rules[MAX_RULES];
 static int num_rules = 0;
 
-static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
+static int rule_match(rule_t rule, struct sk_buff *skb)
 {
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+	struct udphdr* udp_header = udp_hdr(skb);
 	
+	// check direction
+	if (rule.direction != DIRECTION_ANY && rule.direction != DIRECTION_IN && rule.direction != DIRECTION_OUT)
+		return 0;
+	if (rule.direction == DIRECTION_IN && ip_header->daddr != rule.dst_ip)
+		return 0;
+	if (rule.direction == DIRECTION_OUT && ip_header->saddr != rule.src_ip)
+		return 0;
+	
+	// check protocol
+	if (rule.protocol != PROT_ANY && rule.protocol != ip_header->protocol)
+		return 0;
+	
+	// check ack
+	if (rule.ack != ACK_ANY && rule.ack != ACK_NO && rule.ack != ACK_YES)
+		return 0;
+	if (rule.ack == ACK_NO && tcp_header && tcp_header->ack)
+		return 0;
+	if (rule.ack == ACK_YES && tcp_header && !tcp_header->ack)
+		return 0;
+	
+	// check ports
+	if (rule.src_port != PORT_ANY && rule.src_port != tcp_header->source && rule.src_port != udp_header->source)
+		return 0;
+	if (rule.dst_port != PORT_ANY && rule.dst_port != tcp_header->dest && rule.dst_port != udp_header->dest)
+		return 0;
+	
+	// check prefix
+	if ((ip_header->saddr & rule.src_prefix_mask) != rule.src_ip)
+		return 0;
+	if ((ip_header->daddr & rule.dst_prefix_mask) != rule.dst_ip)
+		return 0;
+	
+	return 1;
 }
 
-
-
-static int create_log(log_row_t* log)
+static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
+	int i;
+	for (i = 0; i < num_rules; i++)
+	{
+		if (rule_match(rules[i], skb))
+		{
+			create_log(rules[i]);
+			return rules[i].action;
+		}
+			
+	}
 	
+	create_log(decision);
+	return decision;
+}
+
+ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	ssize_t num_of_bytes;
+
+	num_of_bytes = (str_len < length) ? str_len : length;
+    
+    if (num_of_bytes == 0) { // We check to see if there's anything to write to the user
+    	return 0;
+	}
+    
+    if (copy_to_user(buff, buffer_index, num_of_bytes)) { // Send the data to the user through 'copy_to_user'
+        return -EFAULT;
+    } else { // fuction succeed, we just sent the user 'num_of_bytes' bytes, so we updating the counter and the string pointer index
+        str_len -= num_of_bytes;
+        buffer_index += num_of_bytes;
+        return num_of_bytes;
+    }
+	return -EFAULT; // Should never reach here
+}
+
+static int create_log(struct sk_buff *skb, __u8 verdict)
+{
+
+	log_row_t log;
+	log.timestamp = ktime_get_real_seconds();
+	log.protocol = ip_hdr(skb)->protocol;
+	log.action = verdict;
+	log.src_ip = ip_hdr(skb)->saddr;
+	log.dst_ip = ip_hdr(skb)->daddr;
+	log.src_port = tcp_hdr(skb)->source;
+	log.dst_port = tcp_hdr(skb)->dest;
+	log.reason = 0;
+	
+	log_node* node = kmalloc(sizeof(log_node), GFP_KERNEL);
+	if (!node)
+		return -1;
+	node->data = log;
+	klist_add_tail(&node->node, &logs);
+	
+	return 0;
 }
 
 static create_rule()
@@ -75,7 +173,8 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
-	.read = read_logs
+	.read = read_logs,
+	.write = write_logs
 };
 
 ssize_t display_accepted(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
