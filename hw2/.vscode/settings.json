@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "module.h": "c",
+        "kernel.h": "c",
+        "sysinfo.h": "c",
+        "const.h": "c",
+        "netfilter.h": "c",
+        "random": "c",
+        "*.tcc": "c",
+        "streambuf": "c",
+        "type_traits": "c",
+        "typeinfo": "c"
+    }
+}

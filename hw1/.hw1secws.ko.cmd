@@ -1,0 +1,1 @@
+cmd_/home/fw/sf/homework/hw1/hw1secws.ko := ld -r -m elf_i386 -T ./scripts/module-common.lds --build-id  -o /home/fw/sf/homework/hw1/hw1secws.ko /home/fw/sf/homework/hw1/hw1secws.o /home/fw/sf/homework/hw1/hw1secws.mod.o ;  true
