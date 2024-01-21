@@ -2,6 +2,8 @@
 #include <linux/uaccess.h>
 #include <linux/klist.h>
 #include <stdarg.h>
+#include <linux/skbuff.h>
+#include <string.h>
 
 
 
@@ -14,6 +16,8 @@ static struct nf_hook_ops nfho_fwd;
 
 #define CHRDEV_NAME "firewall"
 
+typedef __be32 ip_t;
+typedef __be16 port_t;
 
 
 static int major_number;
@@ -34,67 +38,95 @@ static struct klist logs;
 static rule_t rules[MAX_RULES];
 static int num_rules = 0;
 
-static int rule_match(rule_t rule, struct sk_buff *skb)
+static ip_t is_addr_in_subnet(ip_t addr, ip_t subnet_addr, ip_t subnet_mask)
 {
-	struct iphdr* ip_header = ip_hdr(skb);
-	struct tcphdr* tcp_header = tcp_hdr(skb);
-	struct udphdr* udp_header = udp_hdr(skb);
-	
-	// check direction
-	if (rule.direction != DIRECTION_ANY && rule.direction != DIRECTION_IN && rule.direction != DIRECTION_OUT)
-		return 0;
-	if (rule.direction == DIRECTION_IN && ip_header->daddr != rule.dst_ip)
-		return 0;
-	if (rule.direction == DIRECTION_OUT && ip_header->saddr != rule.src_ip)
-		return 0;
-	
-	// check protocol
-	if (rule.protocol != PROT_ANY && rule.protocol != ip_header->protocol)
-		return 0;
-	
-	// check ack
-	if (rule.ack != ACK_ANY && rule.ack != ACK_NO && rule.ack != ACK_YES)
-		return 0;
-	if (rule.ack == ACK_NO && tcp_header && tcp_header->ack)
-		return 0;
-	if (rule.ack == ACK_YES && tcp_header && !tcp_header->ack)
-		return 0;
-	
-	// check ports
-	if (rule.src_port != PORT_ANY && rule.src_port != tcp_header->source && rule.src_port != udp_header->source)
-		return 0;
-	if (rule.dst_port != PORT_ANY && rule.dst_port != tcp_header->dest && rule.dst_port != udp_header->dest)
-		return 0;
-	
-	// check prefix
-	if ((ip_header->saddr & rule.src_prefix_mask) != rule.src_ip)
-		return 0;
-	if ((ip_header->daddr & rule.dst_prefix_mask) != rule.dst_ip)
+	return (addr ^ subnet_addr ^ subnet_mask) == 0;
+}
+
+static int is_port_in_range(port_t port, port_t range)
+{
+	return range ? (range == 1023 ? port > 1023 : port==range) : 1;	
+}
+
+static int is_protocol_in_range(u_int8_t prot, prot_t range)
+{
+	return range==PORT_ANY ? 1 : (prot==range ? 1 : range==PORT_OTHER);
+}
+
+static int is_ack_in_range(unsigned short ack, ack_t range)
+{
+	return range == ACK_ANY ? 1 : (range == ACK_YES ? ack : !ack);
+}
+
+static int rule_match(rule_t *rule, struct sk_buff *skb)
+{
+	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct tcphdr* tcp_header;
+	struct udphdr* udp_header;
+	char* nic_name = skb->dev->name;
+	u_int8_t packet_prot = ip_header->protocol;
+
+
+	if(!is_addr_in_subnet(ip_header->saddr, rule->src_ip, rule->src_prefix_mask))
 		return 0;
 	
+	if(!is_addr_in_subnet(ip_header->daddr, rule->dst_ip, rule->dst_prefix_mask))
+		return 0;
+
+	if(rule->direction==DIRECTION_IN && !strcmp(IN_NET_DEVICE_NAME, nic_name))
+		return 0;
+	
+	if(rule->direction==DIRECTION_OUT && !strcmp(OUT_NET_DEVICE_NAME, nic_name))
+		return 0;
+
+
+	if(!is_protocol_in_range(packet_prot, rule->protocol))
+		return 0;
+
+	if(packet_prot == PROT_TCP)
+	{
+		tcp_header = (struct tcphdr*)skb->transport_header;
+		if(!is_port_in_range(tcp_header->source, rule->src_port))
+			return 0;
+		if(!is_port_in_range(tcp_header->dest, rule->dst_port))
+			return 0;
+		if(!is_ack_in_range(tcp_header->ack, rule->ack))
+			return 0;
+	}
+
+	if(packet_prot == PROT_UDP)
+	{
+		udp_header = (struct udphdr*)skb->transport_header;
+		if(!is_port_in_range(udp_header->source, rule->src_port))
+			return 0;
+	
+		if(!is_port_in_range(udp_header->dest, rule->dst_port))
+			return 0;
+	}
+
 	return 1;
 }
 
 static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	int i;
+	rule_t* rule;
 	for (i = 0; i < num_rules; i++)
 	{
-		if (rule_match(rules[i], skb))
+		rule = rules+i;
+		if (rule_match(rule, skb))
 		{
-			create_log(rules[i]);
-			return rules[i].action;
+			create_log(skb, rule);
+			return rule->action;
 		}
 			
 	}
 	
-	create_log(decision);
+	create_log(skb, );
 	return decision;
 }
 
 ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
-	
-	
 	
 	
 	
@@ -122,26 +154,9 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	return -EFAULT; // Should never reach here
 }
 
-static int create_log(struct sk_buff *skb, __u8 verdict)
+static int create_log(struct sk_buff *skb, int verdict, )
 {
 
-	log_row_t log;
-	log.timestamp = ktime_get_real_seconds();
-	log.protocol = ip_hdr(skb)->protocol;
-	log.action = verdict;
-	log.src_ip = ip_hdr(skb)->saddr;
-	log.dst_ip = ip_hdr(skb)->daddr;
-	log.src_port = tcp_hdr(skb)->source;
-	log.dst_port = tcp_hdr(skb)->dest;
-	log.reason = 0;
-	
-	log_node* node = kmalloc(sizeof(log_node), GFP_KERNEL);
-	if (!node)
-		return -1;
-	node->data = log;
-	klist_add_tail(&node->node, &logs);
-	
-	return 0;
 }
 
 static create_rule()
@@ -245,7 +260,7 @@ static int is_action(unsigned char number) {
 	}
 }
 
-static __be32 subnet_mask(unsigned char prefix_len)
+static ip_t subnet_mask(unsigned char prefix_len)
 {
     return prefix_len ? ~0 << (32 - prefix_len) : 0;
 }
