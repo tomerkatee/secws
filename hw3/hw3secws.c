@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <linux/skbuff.h>
 #include <string.h>
+#include <time.h>
 
 
 
@@ -19,24 +20,29 @@ static struct nf_hook_ops nfho_fwd;
 typedef __be32 ip_t;
 typedef __be16 port_t;
 
-
 static int major_number;
 static struct class* sysfs_class = NULL;
 static struct device* rules_device = NULL;
 static struct device* log_device = NULL;
 
 #define MAX_FORMAT_SIZE 40
-#define LOGS_CHUNK_SIZE
+#define LOGS_CHUNK_SIZE 8
 #define NUM_RULE_CATEGORIES 9
+#define IP_ANY 0
+#define LOG_ROW_BUFFER_SIZE 200
 
 #define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
 
+
 typedef struct {
+	int rows_count;
     log_row_t* data;
     struct klist_node node;
 } log_node;
 
-static struct klist logs;
+static struct klist log_klist;
+// static int num_log_rows = 0;
+static log_node* tail;
 static rule_t rules[MAX_RULES];
 static int num_rules = 0;
 
@@ -56,9 +62,60 @@ static rule_t loopback_rule = {
 	.action = NF_ACCEPT
 };
 
+static rule_t default_rule = {
+	.rule_name = "default",
+	.direction = DIRECTION_ANY,
+	.src_ip = IP_ANY,
+	.src_prefix_mask = 0,
+	.src_prefix_size = 0,
+	.dst_ip = IP_ANY,
+	.dst_prefix_mask = 0,
+	.dst_prefix_size = 0,
+	.src_port = PORT_ANY,
+	.dst_port = PORT_ANY,
+	.protocol = PROT_ANY,
+	.ack = ACK_ANY,
+	.action = NF_DROP
+};
+
+
+typedef struct {
+	struct klist_iter nodes_iter;
+	int i;
+} log_iter;
+
+static log_node* cast_to_log_node(struct klist_node* knode)
+{
+	return container_of(knode, log_node, node);
+}
+
+static void log_iter_init(log_iter* iter)
+{
+	klist_iter_init(&log_klist, &iter->nodes_iter);
+	iter->i = 0;
+}
+
+static log_node* get_curr_log_node(log_iter* iter)
+{
+	return cast_to_log_node(iter->nodes_iter.i_cur);
+}
+
+static log_row_t* log_iter_next(log_iter* iter)
+{
+	if(iter->i < get_curr_log_node(iter)->rows_count)
+		return &get_curr_log_node(iter)->data[iter->i++];
+
+	iter->i = 0;
+	if(klist_next(&iter->nodes_iter))
+		return log_iter_next(iter);
+	
+	return NULL;
+}
+
+
 static ip_t is_addr_in_subnet(ip_t addr, ip_t subnet_addr, ip_t subnet_mask)
 {
-	return (addr ^ subnet_addr ^ subnet_mask) == 0;
+	return (addr & subnet_mask) == (subnet_addr & subnet_mask);
 }
 
 static int is_port_in_range(port_t port, port_t range)
@@ -84,10 +141,10 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	char* nic_name = skb->dev->name;
 	u_int8_t packet_prot = ip_header->protocol;
 
-	if(!is_addr_in_subnet(ip_header->saddr, rule->src_ip, rule->src_prefix_mask))
+	if(rule->src_ip != IP_ANY && !is_addr_in_subnet(ip_header->saddr, rule->src_ip, rule->src_prefix_mask))
 		return 0;
 	
-	if(!is_addr_in_subnet(ip_header->daddr, rule->dst_ip, rule->dst_prefix_mask))
+	if(rule->dst_ip != IP_ANY && !is_addr_in_subnet(ip_header->daddr, rule->dst_ip, rule->dst_prefix_mask))
 		return 0;
 
 	if(rule->direction==DIRECTION_IN && !strcmp(IN_NET_DEVICE_NAME, nic_name))
@@ -137,19 +194,105 @@ static int is_xmas_packet(struct sk_buff *skb)
 }
 
 
+// this function will be called only for IPV4 TCP/UDP/ICMP packets
+static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
+{
+	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct tcphdr* tcp_header;
+	struct udphdr* udp_header;
+
+	log_row_t log_row;
+	log_row.timestamp = (unsigned long)time(NULL);
+	log_row.protocol = ip_header->protocol;
+	log_row.action = action;
+	log_row.src_ip = ip_header->saddr;
+	log_row.dst_ip = ip_header->daddr;
+	
+	if(ip_header->protocol == PROT_TCP)
+	{
+		tcp_header = (struct tcphdr*)skb->transport_header;
+		log_row.src_port = tcp_header->source;
+		log_row.dst_port = tcp_header->dest;
+	}
+
+	if(ip_header->protocol == PROT_UDP)
+	{
+		udp_header = (struct udphdr*)skb->transport_header;
+		log_row.src_port = udp_header->source;
+		log_row.dst_port = udp_header->dest;
+	}
+
+	log_row.reason = reason;
+	log_row.count = 1;
+
+	return log_row;
+}
+
+static void add_log_node()
+{
+	log_node* log_node_p = (log_node*)kmalloc(sizeof(log_node), GFP_KERNEL);
+	log_node_p->data = (log_row_t*)kmalloc(sizeof(log_row_t) * LOGS_CHUNK_SIZE, GFP_KERNEL);
+	log_node_p->rows_count = 0;
+	klist_add_tail(&log_node_p->node, &log_klist);
+	tail = log_node_p;
+}
+
+
+static int compare_log_rows(log_row_t r1, log_row_t r2)
+{
+	return r1.protocol == r2.protocol &&
+		r1.action == r2.action &&
+		r1.src_ip == r2.src_ip &&
+		r1.dst_ip == r2.dst_ip &&
+		r1.src_port == r2.src_port &&
+		r1.dst_port == r2.dst_port &&
+		r1.reason == r2.reason;
+}
+
+
+static void add_log(log_row_t log_row)
+{
+	struct klist_iter iter;
+	log_node *node_p;
+	klist_iter_init(&log_klist, &iter);
+	int i;
+
+
+	while((node_p = klist_next(&iter)))
+	{
+		for(i = 0; i < node_p->rows_count; i++)
+		{
+			if(compare_log_rows(log_row, node_p->data[i]))
+			{
+				node_p->data[i].count++;
+				return;
+			}
+		}
+	}
+
+	if(tail->rows_count == LOGS_CHUNK_SIZE)
+		add_log_node();
+
+	tail->data[tail->rows_count++] = log_row;
+}
+
+
+
+
 static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	int i;
 	rule_t* rule;
 	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
 	u_int8_t packet_prot = ip_header->protocol;
+	reason_t reason;
 
-	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(loopback_rule, skb))
+	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
 	if(is_xmas_packet(skb))
 	{
-		create_log(skb, NF_DROP, REASON_XMAS_PACKET);
+		add_log(create_log(skb, NF_DROP, REASON_XMAS_PACKET));
 		return NF_DROP;
 	}
 
@@ -158,86 +301,51 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 		rule = rules+i;
 		if (rule_match(rule, skb))
 		{
-			create_log(skb, rule);
+			// TODO: add reasons
+			reason = i;
+			create_log(skb, rule->action, reason);
 			return rule->action;
 		}
-		//TODO: add default
-			
 	}
-	
-	create_log(skb, );
-	return decision;
+	create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE);
+	return default_rule.action;
 }
 
 ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	
+	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
-	
-	
-	
-	
-	
-	
-	
-	ssize_t num_of_bytes;
+	struct klist_iter iter;
+	log_node *node_p;
+	log_row_t row;
+	klist_iter_init(&log_klist, &iter);
+	int i, written, total=0;
 
-	num_of_bytes = (str_len < length) ? str_len : length;
-    
-    if (num_of_bytes == 0) { // We check to see if there's anything to write to the user
-    	return 0;
+
+	while((node_p = klist_next(&iter)))
+	{
+		for(i = 0; i < node_p->rows_count; i++)
+		{
+			row = node_p->data[i];
+			written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%u %u %u %u %u %u %u %u %u\n",
+			row.timestamp, row.src_ip, row.dst_ip, row.src_port, row.dst_port,
+			row.protocol, row.action, row.reason, row.count);
+			if(copy_to_user(buff, log_row_buffer, written))
+				return -EFAULT;
+			total += written;
+		}
 	}
-    
-    if (copy_to_user(buff, buffer_index, num_of_bytes)) { // Send the data to the user through 'copy_to_user'
-        return -EFAULT;
-    } else { // fuction succeed, we just sent the user 'num_of_bytes' bytes, so we updating the counter and the string pointer index
-        str_len -= num_of_bytes;
-        buffer_index += num_of_bytes;
-        return num_of_bytes;
-    }
-	return -EFAULT; // Should never reach here
+	
+	return total;
 }
 
-static int create_log(struct sk_buff *skb, __u8 action, reason_t reason)
-{
-
-}
-
-ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
-	
-	
-	ssize_t num_of_bytes;
-
-	
-
-	///////////////////////////////////
-
-	num_of_bytes = (str_len < length) ? str_len : length;
-    
-    if (num_of_bytes == 0) { // We check to see if there's anything to write to the user
-    	return 0;
-	}
-    
-    if (copy_to_user(buff, buffer_index, num_of_bytes)) { // Send the data to the user through 'copy_to_user'
-        return -EFAULT;
-    } else { // fuction succeed, we just sent the user 'num_of_bytes' bytes, so we updating the counter and the string pointer index
-        str_len -= num_of_bytes;
-        buffer_index += num_of_bytes;
-        return num_of_bytes;
-    }
-	return -EFAULT; // Should never reach here
-}
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
-	.read = read_logs,
-	.write = write_logs
+	.read = read_logs
 };
 
-ssize_t display_accepted(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
-{
-	return scnprintf(buf, PAGE_SIZE, "%u\n", accepted);
-}
-
+/*
 static int custom_sscanf(char** str, const char* format, ...)
 {
 	int num_chars_scanned, num_matches;
@@ -255,6 +363,7 @@ static int custom_sscanf(char** str, const char* format, ...)
 	return num_matches;
 }
 
+*/
 
 static int is_prot_t(unsigned char number) {
 	switch (number) {
@@ -373,6 +482,13 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	// TODO: clear logs
+
+	log_iter iter;
+	log_node *node_p;
+	log_iter_init(&iter);
+
+	while((node_p = log_iter_next(&iter)))
+		node_p->
 	return count;
 }
 
@@ -424,6 +540,8 @@ register_chrdev_failed:
 
 
 static int __init my_module_init_function(void) {
+	klist_init(&log_klist, NULL, NULL);
+
 	nfho_fwd.hook = (nf_hookfn*)fwd_hook_function;
     nfho_fwd.hooknum = NF_INET_FORWARD;
     nfho_fwd.pf = PF_INET;
@@ -440,6 +558,8 @@ static int __init my_module_init_function(void) {
 }
 
 static void __exit my_module_exit_function(void) {
+	klist_destroy(&log_klist);
+
     nf_unregister_net_hook(&init_net, &nfho_fwd);
 
 	device_remove_file(log_device, (const struct device_attribute *)&dev_attr_reset_attr.attr);

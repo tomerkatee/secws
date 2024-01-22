@@ -15,6 +15,8 @@
         "initializer_list": "c",
         "netfilter_ipv4.h": "c",
         "skbuff.h": "c",
-        "functional": "c"
+        "functional": "c",
+        "klist.h": "c",
+        "algorithm": "c"
     }
 }
