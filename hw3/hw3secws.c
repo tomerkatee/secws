@@ -29,6 +29,8 @@ static struct device* log_device = NULL;
 #define LOGS_CHUNK_SIZE
 #define NUM_RULE_CATEGORIES 9
 
+#define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
+
 typedef struct {
     log_row_t* data;
     struct klist_node node;
@@ -37,6 +39,22 @@ typedef struct {
 static struct klist logs;
 static rule_t rules[MAX_RULES];
 static int num_rules = 0;
+
+static rule_t loopback_rule = {
+	.rule_name = "loopback",
+	.direction = DIRECTION_ANY,
+	.src_ip = htonl(INADDR_LOOPBACK),
+	.src_prefix_mask = subnet_prefix_size_to_mask(8),
+	.src_prefix_size = 8,
+	.dst_ip = htonl(INADDR_LOOPBACK),
+	.dst_prefix_mask = subnet_prefix_size_to_mask(8),
+	.dst_prefix_size = 8,
+	.src_port = PORT_ANY,
+	.dst_port = PORT_ANY,
+	.protocol = PROT_ANY,
+	.ack = ACK_ANY,
+	.action = NF_ACCEPT
+};
 
 static ip_t is_addr_in_subnet(ip_t addr, ip_t subnet_addr, ip_t subnet_mask)
 {
@@ -65,7 +83,6 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	struct udphdr* udp_header;
 	char* nic_name = skb->dev->name;
 	u_int8_t packet_prot = ip_header->protocol;
-
 
 	if(!is_addr_in_subnet(ip_header->saddr, rule->src_ip, rule->src_prefix_mask))
 		return 0;
@@ -107,10 +124,35 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	return 1;
 }
 
+static int is_xmas_packet(struct sk_buff *skb)
+{
+	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct tcphdr* tcp_header;
+
+	if(ip_header->protocol != PROT_TCP)
+		return 0;
+
+	tcp_header = (struct tcphdr*)skb->transport_header;
+	return tcp_header->fin && tcp_header->urg && tcp_header->psh;
+}
+
+
 static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	int i;
 	rule_t* rule;
+	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	u_int8_t packet_prot = ip_header->protocol;
+
+	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(loopback_rule, skb))
+		return NF_ACCEPT;
+
+	if(is_xmas_packet(skb))
+	{
+		create_log(skb, NF_DROP, REASON_XMAS_PACKET);
+		return NF_DROP;
+	}
+
 	for (i = 0; i < num_rules; i++)
 	{
 		rule = rules+i;
@@ -119,6 +161,7 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 			create_log(skb, rule);
 			return rule->action;
 		}
+		//TODO: add default
 			
 	}
 	
@@ -154,12 +197,10 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	return -EFAULT; // Should never reach here
 }
 
-static int create_log(struct sk_buff *skb, int verdict, )
+static int create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 {
 
 }
-
-static create_rule()
 
 ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	
@@ -260,10 +301,7 @@ static int is_action(unsigned char number) {
 	}
 }
 
-static ip_t subnet_mask(unsigned char prefix_len)
-{
-    return prefix_len ? ~0 << (32 - prefix_len) : 0;
-}
+
 
 
 ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -298,8 +336,8 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 			&& is_direction_t(direction)))
 			return -1;
 
-		rule.src_prefix_mask = subnet_mask(rule.src_prefix_size);
-		rule.dst_prefix_mask = subnet_mask(rule.dst_prefix_size);
+		rule.src_prefix_mask = subnet_prefix_size_to_mask(rule.src_prefix_size);
+		rule.dst_prefix_mask = subnet_prefix_size_to_mask(rule.dst_prefix_size);
 		rule.direction = direction;
 		rule.protocol = protocol;
 		rule.ack = ack;
