@@ -410,8 +410,8 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 	unsigned char direction, ack, protocol, action;
 
 	int num_matches, num_chars_scanned;
-	int i, j;
-	for(i = 0 ;; i++, curr+=num_chars_scanned)
+	int i;
+	for(i = 0; i < MAX_RULES; i++, curr+=num_chars_scanned)
 	{
 		rule = temp[i];
 
@@ -442,10 +442,11 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 		rule.action = action;
 	}
 
-	for (j = 0; j < i; j++) 
-		rules[j] = temp[j];
-	
 	num_rules = i;
+
+	for (i = 0; i < num_rules; i++) 
+		rules[i] = temp[i];
+	
 
 	return count;	
 }
@@ -453,19 +454,17 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	char *curr = buf;
-	char* format = "%s %hhu %u %hhu %u %hhu %hu %hu %hhu %hhu %hhu\n";
-	rule_t rule;
+	const char* format = "%s %hhu %u %hhu %u %hhu %hu %hu %hhu %hhu %hhu\n";
+	rule_t* rule;
 	int i;
-	for (i = 0; i < num_rules; i++)
+	for (i = -1; i <= num_rules; i++)
 	{
-		rule = rules[i];
-		
-		curr += scnprintf(curr, PAGE_SIZE-(curr-buf), format, rule.rule_name, rule.direction, rule.src_ip, rule.src_prefix_size, rule.dst_ip, rule.dst_prefix_size, rule.src_port, rule.dst_port, rule.protocol, rule.ack, rule.action);
-		
+		rule = i == -1 ? &loopback_rule : (i == num_rules ? &default_rule : rules+i);
+
+		curr += scnprintf(curr, PAGE_SIZE-(curr-buf), format, rule->rule_name, rule->direction, rule->src_ip, rule->src_prefix_size, rule->dst_ip, rule->dst_prefix_size, rule->src_port, rule->dst_port, rule->protocol, rule->ack, rule->action);		
 	}
 	return curr - buf;
 }
-
 
 
 ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
