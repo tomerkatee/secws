@@ -42,7 +42,7 @@ typedef struct {
 
 static struct klist log_klist;
 // static int num_log_rows = 0;
-static log_node* tail;
+static log_node* tail = NULL;
 static rule_t rules[MAX_RULES];
 static int num_rules = 0;
 
@@ -109,6 +109,7 @@ static log_row_t* log_iter_next(log_iter* iter)
 	if(klist_next(&iter->nodes_iter))
 		return log_iter_next(iter);
 	
+	klist_iter_exit(&iter->nodes_iter);
 	return NULL;
 }
 
@@ -238,46 +239,39 @@ static void add_log_node()
 }
 
 
-static int compare_log_rows(log_row_t r1, log_row_t r2)
+static int compare_log_rows(log_row_t *r1, log_row_t *r2)
 {
-	return r1.protocol == r2.protocol &&
-		r1.action == r2.action &&
-		r1.src_ip == r2.src_ip &&
-		r1.dst_ip == r2.dst_ip &&
-		r1.src_port == r2.src_port &&
-		r1.dst_port == r2.dst_port &&
-		r1.reason == r2.reason;
+	return r1->protocol == r2->protocol &&
+		r1->action == r2->action &&
+		r1->src_ip == r2->src_ip &&
+		r1->dst_ip == r2->dst_ip &&
+		r1->src_port == r2->src_port &&
+		r1->dst_port == r2->dst_port &&
+		r1->reason == r2->reason;
 }
 
 
 static void add_log(log_row_t log_row)
 {
-	struct klist_iter iter;
-	log_node *node_p;
-	klist_iter_init(&log_klist, &iter);
-	int i;
+	log_iter iter;
+	log_iter_init(&iter);
+	log_row_t *curr;
 
-
-	while((node_p = klist_next(&iter)))
+	while(curr = log_iter_next(&iter))
 	{
-		for(i = 0; i < node_p->rows_count; i++)
+		if(compare_log_rows(&log_row, curr))
 		{
-			if(compare_log_rows(log_row, node_p->data[i]))
-			{
-				node_p->data[i].count++;
-				return;
-			}
+			curr->count++;
+			return;
 		}
 	}
 
 	if(tail->rows_count == LOGS_CHUNK_SIZE)
 		add_log_node();
 
+	// tail is now updated to the new log_node
 	tail->data[tail->rows_count++] = log_row;
 }
-
-
-
 
 static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
@@ -315,25 +309,20 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	
 	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
-	struct klist_iter iter;
-	log_node *node_p;
-	log_row_t row;
-	klist_iter_init(&log_klist, &iter);
-	int i, written, total=0;
+	int written, total=0;
 
+	log_iter iter;
+	log_iter_init(&iter);
+	log_row_t *curr;
 
-	while((node_p = klist_next(&iter)))
+	while(curr = log_iter_next(&iter))
 	{
-		for(i = 0; i < node_p->rows_count; i++)
-		{
-			row = node_p->data[i];
-			written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%u %u %u %u %u %u %u %u %u\n",
-			row.timestamp, row.src_ip, row.dst_ip, row.src_port, row.dst_port,
-			row.protocol, row.action, row.reason, row.count);
-			if(copy_to_user(buff, log_row_buffer, written))
-				return -EFAULT;
-			total += written;
-		}
+		written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%u %u %u %u %u %u %u %u %u\n",
+		curr->timestamp, curr->src_ip, curr->dst_ip, curr->src_port, curr->dst_port,
+		curr->protocol, curr->action, curr->reason, curr->count);
+		if(copy_to_user(buff, log_row_buffer, written))
+			return -EFAULT;
+		total += written;
 	}
 	
 	return total;
@@ -481,14 +470,26 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 
 ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	// TODO: clear logs
 
-	log_iter iter;
-	log_node *node_p;
-	log_iter_init(&iter);
+	struct klist_iter iter;
+	log_node *curr_log_node;
+	struct klist_node *prev;
 
-	while((node_p = log_iter_next(&iter)))
-		node_p->
+	if(!tail)
+		return count;
+
+	klist_iter_init_node(&log_klist, &iter, &tail->node);
+
+	do 
+	{
+		prev = klist_prev(&iter);
+		curr_log_node = cast_to_log_node(iter.i_cur);
+		kfree(curr_log_node->data);
+		klist_remove(iter.i_cur);
+		kfree(curr_log_node);
+	} while(prev);
+
+	klist_iter_exit(&iter);
 	return count;
 }
 
