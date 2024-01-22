@@ -1,10 +1,8 @@
 #include "fw.h"
 #include <linux/uaccess.h>
 #include <linux/klist.h>
-#include <stdarg.h>
 #include <linux/skbuff.h>
-#include <string.h>
-#include <time.h>
+#include <linux/time.h>
 
 
 
@@ -201,9 +199,11 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
 	struct tcphdr* tcp_header;
 	struct udphdr* udp_header;
+	struct timespec ts;
 
 	log_row_t log_row;
-	log_row.timestamp = (unsigned long)time(NULL);
+	getnstimeofday(&ts);
+	log_row.timestamp = ts.tv_sec;
 	log_row.protocol = ip_header->protocol;
 	log_row.action = action;
 	log_row.src_ip = ip_header->saddr;

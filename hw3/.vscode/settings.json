@@ -17,6 +17,7 @@
         "skbuff.h": "c",
         "functional": "c",
         "klist.h": "c",
-        "algorithm": "c"
+        "algorithm": "c",
+        "string.h": "c"
     }
 }
