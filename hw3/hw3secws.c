@@ -5,13 +5,10 @@
 #include <linux/time.h>
 
 
-
-
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tomer Katee");
 
 static struct nf_hook_ops nfho_fwd;
-/////////////////////////////////////////////////////////
 
 #define CHRDEV_NAME "firewall"
 
@@ -84,24 +81,31 @@ typedef struct {
 
 static log_node* cast_to_log_node(struct klist_node* knode)
 {
-	return container_of(knode, log_node, node);
+	return knode ? container_of(knode, log_node, node) : NULL;
 }
 
 static void log_iter_init(log_iter* iter)
 {
 	klist_iter_init(&log_klist, &iter->nodes_iter);
+	klist_next(&iter->nodes_iter);
 	iter->i = 0;
 }
 
-static log_node* get_curr_log_node(log_iter* iter)
-{
-	return cast_to_log_node(iter->nodes_iter.i_cur);
-}
 
 static log_row_t* log_iter_next(log_iter* iter)
 {
-	if(iter->i < get_curr_log_node(iter)->rows_count)
-		return &get_curr_log_node(iter)->data[iter->i++];
+	log_node* curr_log_node = cast_to_log_node(iter->nodes_iter.i_cur);
+
+	printk(KERN_DEBUG "5\n");
+	if(!curr_log_node)
+		return NULL;
+	printk(KERN_DEBUG "6\n");
+
+	if(iter->i < curr_log_node->rows_count)
+		return &curr_log_node->data[iter->i++];
+
+	printk(KERN_DEBUG "7\n");
+
 
 	iter->i = 0;
 	if(klist_next(&iter->nodes_iter))
@@ -196,6 +200,8 @@ static int is_xmas_packet(struct sk_buff *skb)
 // this function will be called only for IPV4 TCP/UDP/ICMP packets
 static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 {
+	printk(KERN_DEBUG "2\n");
+
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	struct udphdr* udp_header;
@@ -231,13 +237,15 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 
 static void add_log_node(void)
 {
-	log_node* log_node_p = (log_node*)kmalloc(sizeof(log_node), GFP_KERNEL);
-	log_node_p->data = (log_row_t*)kmalloc(sizeof(log_row_t) * LOGS_CHUNK_SIZE, GFP_KERNEL);
+	log_node* log_node_p;
+	if(!(log_node_p = (log_node*)kmalloc(sizeof(log_node), GFP_KERNEL)))
+		printk(KERN_ERR "kmalloc failed\n");
+	if(!(log_node_p->data = (log_row_t*)kmalloc(sizeof(log_row_t) * LOGS_CHUNK_SIZE, GFP_KERNEL)))
+		printk(KERN_ERR "kmalloc failed\n");
 	log_node_p->rows_count = 0;
 	klist_add_tail(&log_node_p->node, &log_klist);
 	tail = log_node_p;
 }
-
 
 static int compare_log_rows(log_row_t *r1, log_row_t *r2)
 {
@@ -255,6 +263,10 @@ static void add_log(log_row_t log_row)
 {
 	log_iter iter;
 	log_row_t *curr;
+	
+	printk(KERN_DEBUG "8\n");
+
+	
 	log_iter_init(&iter);
 
 	while((curr = log_iter_next(&iter)))
@@ -266,7 +278,7 @@ static void add_log(log_row_t log_row)
 		}
 	}
 
-	if(tail->rows_count == LOGS_CHUNK_SIZE)
+	if(!tail || tail->rows_count == LOGS_CHUNK_SIZE)
 		add_log_node();
 
 	// tail is now updated to the new log_node
@@ -297,11 +309,11 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 		{
 			// TODO: add reasons
 			reason = i;
-			create_log(skb, rule->action, reason);
+			add_log(create_log(skb, rule->action, reason));
 			return rule->action;
 		}
 	}
-	create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE);
+	add_log(create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE));
 	return default_rule.action;
 }
 
@@ -310,10 +322,10 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
 	int written, total=0;
-
 	log_iter iter;
 	log_row_t *curr;
 	log_iter_init(&iter);
+
 
 	while((curr = log_iter_next(&iter)))
 	{
@@ -323,6 +335,8 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 		if(copy_to_user(buff, log_row_buffer, written))
 			return -EFAULT;
 		total += written;
+		printk(KERN_DEBUG "%d\n", total);
+
 	}
 	
 	return total;
@@ -491,8 +505,9 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	return count;
 }
 
-static DEVICE_ATTR(rules_attr, S_IWUSR | S_IRUGO, display_rules, modify_rules);
-static DEVICE_ATTR(reset_attr, S_IWUSR, NULL, modify_reset);
+// TODO: ask about perms of rules
+static DEVICE_ATTR(rules, S_IWUSR | S_IRUGO, display_rules, modify_rules);
+static DEVICE_ATTR(reset, S_IWUSR, NULL, modify_reset);
 
 static int register_sysfs_chrdev(void)
 {
@@ -509,14 +524,15 @@ static int register_sysfs_chrdev(void)
 	if (IS_ERR(rules_device))
 		goto rules_device_create_failed;
 	
-	if (device_create_file(rules_device, (const struct device_attribute *)&dev_attr_rules_attr.attr))
+	if (device_create_file(rules_device, (const struct device_attribute *)&dev_attr_rules.attr))
 		goto rules_attr_create_failed;
 	
-	log_device = device_create(sysfs_class, NULL, MKDEV(major_number, MINOR_LOG), NULL, DEVICE_NAME_LOG);
+	// TODO: ask about device name
+	log_device = device_create(sysfs_class, NULL, MKDEV(major_number, MINOR_LOG), NULL, CLASS_NAME "_" DEVICE_NAME_LOG);
 	if (IS_ERR(log_device))
 		goto log_device_create_failed;
 
-	if (device_create_file(log_device, (const struct device_attribute *)&dev_attr_reset_attr.attr))
+	if (device_create_file(log_device, (const struct device_attribute *)&dev_attr_reset.attr))
 		goto reset_attr_create_failed;
 	
 
@@ -559,10 +575,10 @@ static int __init my_module_init_function(void) {
 static void __exit my_module_exit_function(void) {
     nf_unregister_net_hook(&init_net, &nfho_fwd);
 
-	device_remove_file(log_device, (const struct device_attribute *)&dev_attr_reset_attr.attr);
+	device_remove_file(log_device, (const struct device_attribute *)&dev_attr_reset.attr);
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_LOG));
 
-    device_remove_file(rules_device, (const struct device_attribute *)&dev_attr_rules_attr.attr);	
+    device_remove_file(rules_device, (const struct device_attribute *)&dev_attr_rules.attr);	
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_RULES));
 
 	class_destroy(sysfs_class);
