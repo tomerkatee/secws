@@ -19,6 +19,8 @@ static int major_number;
 static struct class* sysfs_class = NULL;
 static struct device* rules_device = NULL;
 static struct device* log_device = NULL;
+static log_iter read_log_iter;
+
 
 #define MAX_FORMAT_SIZE 40
 #define LOGS_CHUNK_SIZE 8
@@ -104,13 +106,22 @@ static log_row_t* log_iter_next(log_iter* iter)
 	if(iter->i < curr_log_node->rows_count)
 		return &curr_log_node->data[iter->i++];
 
+	
 	printk(KERN_DEBUG "7\n");
+
 
 
 	iter->i = 0;
 	if(klist_next(&iter->nodes_iter))
+	{
+		printk(KERN_DEBUG "8\n");
+
 		return log_iter_next(iter);
+
+	}
 	
+	printk(KERN_DEBUG "9\n");
+
 	klist_iter_exit(&iter->nodes_iter);
 	return NULL;
 }
@@ -264,7 +275,7 @@ static void add_log(log_row_t log_row)
 	log_iter iter;
 	log_row_t *curr;
 	
-	printk(KERN_DEBUG "8\n");
+	printk(KERN_DEBUG "1\n");
 
 	
 	log_iter_init(&iter);
@@ -293,6 +304,8 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
 
+	printk(KERN_DEBUG "packet_arrived\n");
+
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
@@ -317,35 +330,50 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	return default_rule.action;
 }
 
-ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
+int my_open(struct inode *_inode, struct file *_file)
+{
+	log_iter_init(&read_log_iter);
+	return 0;
+}
+
+ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	
 	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
 	int written, total=0;
-	log_iter iter;
-	log_row_t *curr;
-	log_iter_init(&iter);
+	int left = length;
+	
+	log_row_t *row;
+	char *curr = buff;
 
+	printk(KERN_DEBUG "a\n");
 
-	while((curr = log_iter_next(&iter)))
+	while((row = log_iter_next(&read_log_iter)))
 	{
+		printk(KERN_DEBUG "b\n");
+		
 		written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%lu %u %u %u %u %u %u %u %u\n",
-		curr->timestamp, curr->src_ip, curr->dst_ip, curr->src_port, curr->dst_port,
-		curr->protocol, curr->action, curr->reason, curr->count);
-		if(copy_to_user(buff, log_row_buffer, written))
+		row->timestamp, row->src_ip, row->dst_ip, row->src_port, row->dst_port,
+		row->protocol, row->action, row->reason, row->count);
+
+		if(copy_to_user(curr, log_row_buffer, written))
 			return -EFAULT;
+		curr += written;
 		total += written;
 		printk(KERN_DEBUG "%d\n", total);
 
 	}
+	printk(KERN_DEBUG "c\n");
+
 	
-	return total;
+	return 0;
 }
 
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
-	.read = read_logs
+	.read = read_log,
+	.open = open_log
 };
 
 /*
