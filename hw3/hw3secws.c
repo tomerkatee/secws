@@ -134,7 +134,7 @@ static int is_ack_in_range(unsigned short ack, ack_t range)
 
 static int rule_match(rule_t *rule, struct sk_buff *skb)
 {
-	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	struct udphdr* udp_header;
 	char* nic_name = skb->dev->name;
@@ -158,7 +158,7 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 
 	if(packet_prot == PROT_TCP)
 	{
-		tcp_header = (struct tcphdr*)skb->transport_header;
+		tcp_header = tcp_hdr(skb);
 		if(!is_port_in_range(tcp_header->source, rule->src_port))
 			return 0;
 		if(!is_port_in_range(tcp_header->dest, rule->dst_port))
@@ -169,7 +169,7 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 
 	if(packet_prot == PROT_UDP)
 	{
-		udp_header = (struct udphdr*)skb->transport_header;
+		udp_header = udp_hdr(skb);
 		if(!is_port_in_range(udp_header->source, rule->src_port))
 			return 0;
 	
@@ -182,13 +182,13 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 
 static int is_xmas_packet(struct sk_buff *skb)
 {
-	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 
 	if(ip_header->protocol != PROT_TCP)
 		return 0;
 
-	tcp_header = (struct tcphdr*)skb->transport_header;
+	tcp_header = tcp_hdr(skb);
 	return tcp_header->fin && tcp_header->urg && tcp_header->psh;
 }
 
@@ -196,7 +196,7 @@ static int is_xmas_packet(struct sk_buff *skb)
 // this function will be called only for IPV4 TCP/UDP/ICMP packets
 static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 {
-	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	struct udphdr* udp_header;
 	struct timespec ts;
@@ -211,14 +211,14 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 	
 	if(ip_header->protocol == PROT_TCP)
 	{
-		tcp_header = (struct tcphdr*)skb->transport_header;
+		tcp_header = tcp_hdr(skb);
 		log_row.src_port = tcp_header->source;
 		log_row.dst_port = tcp_header->dest;
 	}
 
 	if(ip_header->protocol == PROT_UDP)
 	{
-		udp_header = (struct udphdr*)skb->transport_header;
+		udp_header = udp_hdr(skb);
 		log_row.src_port = udp_header->source;
 		log_row.dst_port = udp_header->dest;
 	}
@@ -229,7 +229,7 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 	return log_row;
 }
 
-static void add_log_node()
+static void add_log_node(void)
 {
 	log_node* log_node_p = (log_node*)kmalloc(sizeof(log_node), GFP_KERNEL);
 	log_node_p->data = (log_row_t*)kmalloc(sizeof(log_row_t) * LOGS_CHUNK_SIZE, GFP_KERNEL);
@@ -254,10 +254,10 @@ static int compare_log_rows(log_row_t *r1, log_row_t *r2)
 static void add_log(log_row_t log_row)
 {
 	log_iter iter;
-	log_iter_init(&iter);
 	log_row_t *curr;
+	log_iter_init(&iter);
 
-	while(curr = log_iter_next(&iter))
+	while((curr = log_iter_next(&iter)))
 	{
 		if(compare_log_rows(&log_row, curr))
 		{
@@ -277,7 +277,7 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 {
 	int i;
 	rule_t* rule;
-	struct iphdr* ip_header = (struct iphdr*)skb->network_header;
+	struct iphdr* ip_header = ip_hdr(skb);
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
 
@@ -312,12 +312,12 @@ ssize_t read_logs(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	int written, total=0;
 
 	log_iter iter;
-	log_iter_init(&iter);
 	log_row_t *curr;
+	log_iter_init(&iter);
 
-	while(curr = log_iter_next(&iter))
+	while((curr = log_iter_next(&iter)))
 	{
-		written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%u %u %u %u %u %u %u %u %u\n",
+		written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%lu %u %u %u %u %u %u %u %u\n",
 		curr->timestamp, curr->src_ip, curr->dst_ip, curr->src_port, curr->dst_port,
 		curr->protocol, curr->action, curr->reason, curr->count);
 		if(copy_to_user(buff, log_row_buffer, written))
@@ -401,11 +401,10 @@ static int is_action(unsigned char number) {
 
 
 
-
 ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	rule_t temp[MAX_RULES];
-	char* curr = buf;
+	rule_t *temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
+	const char* curr = buf;
 	rule_t rule;
 	unsigned char direction, ack, protocol, action;
 
@@ -423,7 +422,6 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 		if(num_matches != NUM_RULE_CATEGORIES)
 			return -1;
 
-		
 		if (!(rule.src_prefix_size <= 32
 			&& rule.dst_prefix_size <= 32
 			&& rule.src_port <= PORT_ABOVE_1023
@@ -447,6 +445,7 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 	for (i = 0; i < num_rules; i++) 
 		rules[i] = temp[i];
 	
+	kfree(temp);
 
 	return count;	
 }
@@ -518,7 +517,7 @@ static int register_sysfs_chrdev(void)
 		goto log_device_create_failed;
 
 	if (device_create_file(log_device, (const struct device_attribute *)&dev_attr_reset_attr.attr))
-		goto rules_attr_create_failed;
+		goto reset_attr_create_failed;
 	
 
 	return 0;
@@ -558,8 +557,6 @@ static int __init my_module_init_function(void) {
 }
 
 static void __exit my_module_exit_function(void) {
-	klist_destroy(&log_klist);
-
     nf_unregister_net_hook(&init_net, &nfho_fwd);
 
 	device_remove_file(log_device, (const struct device_attribute *)&dev_attr_reset_attr.attr);
