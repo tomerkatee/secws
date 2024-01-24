@@ -3,6 +3,7 @@
 #include <linux/klist.h>
 #include <linux/skbuff.h>
 #include <linux/time.h>
+#include <linux/string.h>
 
 
 MODULE_LICENSE("GPL");
@@ -28,6 +29,7 @@ static struct device* log_device = NULL;
 #define IP_ANY 0
 #define LOG_ROW_BUFFER_SIZE 200
 
+//TODO: fix!
 #define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
 
 
@@ -512,6 +514,51 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 }
 */
 
+char* copy_rule_to_buffer(char *buff, rule_t *rule)
+{
+	char *curr = buff;
+		memcpy(curr, rule->rule_name, sizeof(rule->rule_name));
+	curr += sizeof(rule->rule_name);
+
+	memcpy(curr, &rule->direction, sizeof(rule->direction));
+	curr += sizeof(rule->direction);
+
+	memcpy(curr, &rule->src_ip, sizeof(rule->src_ip));
+	curr += sizeof(rule->src_ip);
+
+	memcpy(curr, &rule->src_prefix_mask, sizeof(rule->src_prefix_mask));
+	curr += sizeof(rule->src_prefix_mask);
+
+	memcpy(curr, &rule->src_prefix_size, sizeof(rule->src_prefix_size));
+	curr += sizeof(rule->src_prefix_size);
+
+	memcpy(curr, &rule->dst_ip, sizeof(rule->dst_ip));
+	curr += sizeof(rule->dst_ip);
+
+	memcpy(curr, &rule->dst_prefix_mask, sizeof(rule->dst_prefix_mask));
+	curr += sizeof(rule->dst_prefix_mask);
+
+	memcpy(curr, &rule->dst_prefix_size, sizeof(rule->dst_prefix_size));
+	curr += sizeof(rule->dst_prefix_size);
+
+	memcpy(curr, &rule->src_port, sizeof(rule->src_port));
+	curr += sizeof(rule->src_port);
+
+	memcpy(curr, &rule->dst_port, sizeof(rule->dst_port));
+	curr += sizeof(rule->dst_port);
+
+	memcpy(curr, &rule->protocol, sizeof(rule->protocol));
+	curr += sizeof(rule->protocol);
+
+	memcpy(curr, &rule->ack, sizeof(rule->ack));
+	curr += sizeof(rule->ack);
+
+	memcpy(curr, &rule->action, sizeof(rule->action));
+	curr += sizeof(rule->action);
+
+	return curr;
+}
+
 ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	char *curr = buf;
@@ -521,8 +568,7 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 	{
 		rule = i == -1 ? &loopback_rule : (i == num_rules ? &default_rule : rules+i);
 
-		copy_to_user(curr, rule, sizeof(rule_t));
-		curr += sizeof(rule_t);
+		curr = copy_rule_to_buffer(curr, rule);
 	}
 	return curr - buf;
 }
@@ -613,10 +659,10 @@ static int __init my_module_init_function(void) {
 
     if(register_sysfs_chrdev())
 	{
-		printk(KERN_ERR "hw3secws module failed to load\n");
+		printk(KERN_ERR "firewall module failed to load\n");
 		return -1;
 	}
-	printk(KERN_INFO "hw3secws module loaded\n");
+	printk(KERN_INFO "firewall module loaded\n");
 	return 0; 
 }
 
@@ -632,7 +678,7 @@ static void __exit my_module_exit_function(void) {
 	class_destroy(sysfs_class);
 	unregister_chrdev(major_number, CHRDEV_NAME);
 
-	printk(KERN_INFO "hw3secws module unloaded\n");
+	printk(KERN_INFO "firewall module unloaded\n");
 }
 
 module_init(my_module_init_function);

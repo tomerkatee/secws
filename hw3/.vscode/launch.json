@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "SSH Login and Run main.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["show_rules"],
+            "preLaunchTask": "SSH Login"
+        }
+    ],
+    "tasks": [
+        {
+            "label": "SSH Login",
+            "type": "shell",
+            "command": "ssh",
+            "args": ["user@remote-machine"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        }
+    ]
+}
