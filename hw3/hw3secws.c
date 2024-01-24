@@ -19,7 +19,7 @@ static int major_number;
 static struct class* sysfs_class = NULL;
 static struct device* rules_device = NULL;
 static struct device* log_device = NULL;
-static log_iter read_log_iter;
+// static log_iter read_log_iter;
 
 
 #define MAX_FORMAT_SIZE 40
@@ -211,14 +211,12 @@ static int is_xmas_packet(struct sk_buff *skb)
 // this function will be called only for IPV4 TCP/UDP/ICMP packets
 static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 {
-	printk(KERN_DEBUG "2\n");
-
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	struct udphdr* udp_header;
 	struct timespec ts;
-
 	log_row_t log_row;
+
 	getnstimeofday(&ts);
 	log_row.timestamp = ts.tv_sec;
 	log_row.protocol = ip_header->protocol;
@@ -284,6 +282,7 @@ static void add_log(log_row_t log_row)
 	{
 		if(compare_log_rows(&log_row, curr))
 		{
+			curr->timestamp = log_row.timestamp;
 			curr->count++;
 			return;
 		}
@@ -329,14 +328,18 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	add_log(create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE));
 	return default_rule.action;
 }
+/*
 
 int my_open(struct inode *_inode, struct file *_file)
 {
 	log_iter_init(&read_log_iter);
 	return 0;
 }
-
+*/
 ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
+	return 0;
+
+	/*
 	
 	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
@@ -367,13 +370,13 @@ ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
 
 	
 	return 0;
+	*/
 }
 
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
-	.read = read_log,
-	.open = open_log
+	.read = read_log
 };
 
 /*
@@ -492,6 +495,7 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 	return count;	
 }
 
+/*
 ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	char *curr = buf;
@@ -503,6 +507,22 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 		rule = i == -1 ? &loopback_rule : (i == num_rules ? &default_rule : rules+i);
 
 		curr += scnprintf(curr, PAGE_SIZE-(curr-buf), format, rule->rule_name, rule->direction, rule->src_ip, rule->src_prefix_size, rule->dst_ip, rule->dst_prefix_size, rule->src_port, rule->dst_port, rule->protocol, rule->ack, rule->action);		
+	}
+	return curr - buf;
+}
+*/
+
+ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
+{
+	char *curr = buf;
+	rule_t* rule;
+	int i;
+	for (i = -1; i <= num_rules; i++)
+	{
+		rule = i == -1 ? &loopback_rule : (i == num_rules ? &default_rule : rules+i);
+
+		copy_to_user(curr, rule, sizeof(rule_t));
+		curr += sizeof(rule_t);
 	}
 	return curr - buf;
 }

@@ -1,5 +1,4 @@
-sudo rmmod hw3secws
+sudo rmmod firewall
 make
-sudo insmod hw3secws.ko
+sudo insmod firewall.ko
 sudo cat /dev/fw_log
-dmesg
