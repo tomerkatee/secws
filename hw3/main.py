@@ -53,7 +53,10 @@ class Protocol(ValidatableEnum):
 """
 
 path_to_rules_attr = "/sys/class/fw/rules/rules"
+path_to_reset_attr = "/sys/class/fw/fw_log/reset"
+path_to_log = "/dev/fw_log"
 rule_format = "<20s I I B I B H H B I B"
+log_format = "<L B B "
 port_dict = TwoDirectionalDict({">1023": 1023, "any": 0})
 protocol_dict = TwoDirectionalDict({"ICMP": 1, "TCP": 6, "UDP": 17, "other": 255, "any": 143})
 direction_dict = TwoDirectionalDict({"in": 1, "out": 2, "any": 3})
@@ -287,6 +290,35 @@ def show_rules():
         print("Error opening rules file: "+e)
         return -1
     
+def show_log():
+    try:
+        with open(path_to_log, 'rb') as log:
+            while True:
+                rule_data = rules_attr.read(struct.calcsize(rule_format))
+                if not rule_data:
+                    break
+
+                rule = rule_from_bytes(rule_data)
+                if(rule == -1):
+                    print("Error converting bytes to rule")
+                    return -1
+                
+                rules.append(rule)
+
+            print('\n'.join([line_from_rule(r) for r in rules]))
+
+    except IOError as e:
+        print("Error opening rules file: "+e)
+        return -1
+    
+        
+        
+
+
+def clear_log():
+    with open(path_to_reset_attr, 'w') as reset_attr:
+        reset_attr.write("0")
+    
 def main():
     if len(sys.argv) < 2:
         print("error: not enough arguments")
@@ -303,9 +335,9 @@ def main():
     elif sys.argv[1] == "show_rules":
         show_rules()
     elif sys.argv[1] == "show_log":
-        pass  # TODO: Implement show_log
+        show_log()
     elif sys.argv[1] == "clear_log":
-        pass  # TODO: Implement clear_log
+        clear_log()
     else:
         print("error: bad arguments")
 

@@ -40,7 +40,6 @@ typedef struct {
 } log_node;
 
 static struct klist log_klist;
-// static int num_log_rows = 0;
 static log_node* tail = NULL;
 static rule_t custom_rules[MAX_RULES];
 static int num_custom_rules = 0;
@@ -339,10 +338,7 @@ int my_open(struct inode *_inode, struct file *_file)
 }
 */
 ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
-	return 0;
 
-	/*
-	
 	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
 	int written, total=0;
@@ -372,7 +368,7 @@ ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
 
 	
 	return 0;
-	*/
+	
 }
 
 
@@ -381,25 +377,6 @@ static struct file_operations fops = {
 	.read = read_log
 };
 
-/*
-static int custom_sscanf(char** str, const char* format, ...)
-{
-	int num_chars_scanned, num_matches;
-	va_list args;
-
-	va_start(args, format);
-	char format_with_num[MAX_FORMAT_SIZE];
-	// used to append a "%n" to the format
-	scnprintf(format_with_num, MAX_FORMAT_SIZE, "%s%%n", format);
-
-	num_matches = sscanf(*str, format_with_num, args, &num_chars_scanned);
-
-	*str += num_chars_scanned;
-	va_end(args);
-	return num_matches;
-}
-
-*/
 
 static int is_prot_t(unsigned char number) {
 	switch (number) {
@@ -450,27 +427,17 @@ const char* set_rule_from_buffer(const char* buff, rule_t *rule)
 {
 	const char *curr = buff;
 
-	printk(KERN_INFO "1\n");
 	memcpy(&rule->rule_name, curr, sizeof(rule->rule_name));
 	curr += sizeof(rule->rule_name);
 
-	printk(KERN_INFO "%s\n", rule->rule_name);
 	memcpy(&rule->direction, curr, sizeof(rule->direction));
 	curr += sizeof(rule->direction);
 
-	printk(KERN_INFO "%d\n", rule->direction);
-
 	memcpy(&rule->src_ip, curr, sizeof(rule->src_ip));
 	curr += sizeof(rule->src_ip);
-	
-	printk(KERN_INFO "%d\n", rule->src_ip);
-
 
 	memcpy(&rule->src_prefix_size, curr, sizeof(rule->src_prefix_size));
 	curr += sizeof(rule->src_prefix_size);
-
-	printk(KERN_INFO "%d\n", rule->src_prefix_size);
-
 
 	memcpy(&rule->dst_ip, curr, sizeof(rule->dst_ip));
 	curr += sizeof(rule->dst_ip);
@@ -478,11 +445,8 @@ const char* set_rule_from_buffer(const char* buff, rule_t *rule)
 	memcpy(&rule->dst_prefix_size, curr, sizeof(rule->dst_prefix_size));
 	curr += sizeof(rule->dst_prefix_size);
 
-
 	memcpy(&rule->src_port, curr, sizeof(rule->src_port));
 	curr += sizeof(rule->src_port);
-	printk(KERN_INFO "%d\n", rule->src_port);
-
 
 	memcpy(&rule->dst_port, curr, sizeof(rule->dst_port));
 	curr += sizeof(rule->dst_port);
@@ -514,16 +478,13 @@ const char* set_rule_from_buffer(const char* buff, rule_t *rule)
 
 ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	
 	int i;
 	rule_t *temp;
 	const char* curr = buf;
 	temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
-
 	
 	for(i = 0; i < MAX_RULES && curr-buf < count; i++)
 	{
-		printk(KERN_INFO "made it to %d\n", i);
 		if(!(curr = set_rule_from_buffer(curr, temp+i)))
 			return -1;
 		if(curr-buf > count)
@@ -540,74 +501,6 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 	return count;	
 }
 
-/*
-ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	rule_t *temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
-	const char* curr = buf;
-	rule_t rule;
-	unsigned char direction, ack, protocol, action;
-
-	int num_matches, num_chars_scanned;
-	int i;
-	for(i = 0; i < MAX_RULES; i++, curr+=num_chars_scanned)
-	{
-		rule = temp[i];
-
-		num_matches = sscanf(curr, "%19s %hhu %u %hhu %u %hhu %hu %hu %hhu %hhu %hhu%n", rule.rule_name, &direction, &rule.src_ip, &rule.src_prefix_size, &rule.dst_ip, &rule.dst_prefix_size, &rule.src_port, &rule.dst_port, &protocol, &ack, &action, &num_chars_scanned);
-
-		if(num_matches == 0)
-			break;
-		
-		if(num_matches != NUM_RULE_CATEGORIES)
-			return -1;
-
-		if (!(rule.src_prefix_size <= 32
-			&& rule.dst_prefix_size <= 32
-			&& rule.src_port <= PORT_ABOVE_1023
-			&& rule.dst_port <= PORT_ABOVE_1023
-			&& is_prot_t(protocol)
-			&& is_ack_t(ack)
-			&& is_action(action)
-			&& is_direction_t(direction)))
-			return -1;
-
-		rule.src_prefix_mask = subnet_prefix_size_to_mask(rule.src_prefix_size);
-		rule.dst_prefix_mask = subnet_prefix_size_to_mask(rule.dst_prefix_size);
-		rule.direction = direction;
-		rule.protocol = protocol;
-		rule.ack = ack;
-		rule.action = action;
-	}
-
-	num_rules = i;
-
-	for (i = 0; i < num_rules; i++) 
-		rules[i] = temp[i];
-	
-	kfree(temp);
-
-	return count;	
-}
-
-*/
-
-/*
-ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
-{
-	char *curr = buf;
-	const char* format = "%s %hhu %u %hhu %u %hhu %hu %hu %hhu %hhu %hhu\n";
-	rule_t* rule;
-	int i;
-	for (i = -1; i <= num_rules; i++)
-	{
-		rule = i == -1 ? &loopback_rule : (i == num_rules ? &default_rule : rules+i);
-
-		curr += scnprintf(curr, PAGE_SIZE-(curr-buf), format, rule->rule_name, rule->direction, rule->src_ip, rule->src_prefix_size, rule->dst_ip, rule->dst_prefix_size, rule->src_port, rule->dst_port, rule->protocol, rule->ack, rule->action);		
-	}
-	return curr - buf;
-}
-*/
 
 char* copy_rule_to_buffer(char *buff, rule_t *rule)
 {
