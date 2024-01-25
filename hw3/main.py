@@ -1,9 +1,10 @@
+#!/usr/bin/env python3
+
 import struct
 import os
 import sys
 from enum import Enum
 import ipaddress
-import bidict
 
 class TwoDirectionalDict:
     # assuming that forward_dict is injective
@@ -11,13 +12,13 @@ class TwoDirectionalDict:
         self.forward_dict = forward_dict
         self.reverse_dict = {forward_dict[k]:k for k in forward_dict.keys()}
 
-    def get_key(self, key):
+    def get_value(self, key):
         try:
             return self.forward_dict[key]
         except KeyError:
             return -1
-
-    def get_value(self, value):
+        
+    def get_key(self, value):
         try:
             return self.reverse_dict[value]
         except KeyError:
@@ -52,7 +53,7 @@ class Protocol(ValidatableEnum):
 """
 
 path_to_rules_attr = "/sys/class/fw/rules/rules"
-rule_format = "<20s I I I B I I B H H B I B"
+rule_format = "<20s I I B I B H H B I B"
 port_dict = TwoDirectionalDict({">1023": 1023, "any": 0})
 protocol_dict = TwoDirectionalDict({"ICMP": 1, "TCP": 6, "UDP": 17, "other": 255, "any": 143})
 direction_dict = TwoDirectionalDict({"in": 1, "out": 2, "any": 3})
@@ -75,43 +76,56 @@ class Rule:
         self.ack = ack
         self.action = action
 
+    @staticmethod
+    def int_to_ip_str(ip_n):
+        return str(ipaddress.IPv4Address(ip_n.to_bytes(4, byteorder='little')))
+        
+    @staticmethod
+    def ip_str_to_int(ip_str):
+        return int.from_bytes(ipaddress.IPv4Address(ip_str).packed, byteorder='little')
+
+
 
 def try_convert_to_ip_and_prefix(s):
+    if(s == "any"):
+        return try_convert_to_ip_and_prefix("0.0.0.0/0")
+
     splitted = s.split('/')
-    if(len(splitted == 2)):
+    if len(splitted) == 2:
         try:
-            ip = ipaddress.ip_address(splitted[0])
-            prefix = splitted[1]
-            if(prefix.is_decimal() and 0 <= int(prefix) <= 32):
+            ip = Rule.ip_str_to_int(splitted[0])
+            prefix = int(splitted[1])
+            if(0 <= prefix <= 32):
                 return ip, prefix
-        except ValueError:
+        except:
             return -1
 
 def try_convert_to_port(s):
     res = port_dict.get_value(s)
     if res != -1:
         return res
-    if s.is_decimal() and 0 < int(s) < 1023:
+    if s.isdigit() and 0 < int(s) < 1023:
         return int(s)
     return -1
 
 # here we can assume rule is ok since it has come from kernel module
 def line_from_rule(rule: Rule):
-    name = rule.name
+    name = rule.name.rstrip(b'\x00').decode('utf-8')
     direction = direction_dict.get_key(rule.direction)
-    src_ip_prefix = ipaddress.IPv4Address(rule.src_ip) + "/" + rule.src_prefix_size
-    dst_ip_prefix = ipaddress.IPv4Address(rule.dst_ip) + "/" + rule.dst_prefix_size
+    get_ip_prefix = lambda ip,prefix_size: Rule.int_to_ip_str(ip) + "/" + str(prefix_size)
+    src_ip_prefix = get_ip_prefix(rule.src_ip, rule.src_prefix_size)
+    dst_ip_prefix = get_ip_prefix(rule.dst_ip, rule.dst_prefix_size)
     protocol = protocol_dict.get_key(rule.protocol)
-    src_port = rule.src_port if 0<rule.src_port<1023 else port_dict.get_key(rule.src_port)
-    dst_port = rule.dst_port if 0<rule.dst_port<1023 else port_dict.get_key(rule.dst_port)
+    get_port = lambda port: port if 0<port<1023 else port_dict.get_key(port)
+    src_port = get_port(rule.src_port)
+    dst_port = get_port(rule.dst_port)
     ack = ack_dict.get_key(rule.ack)
     action = action_dict.get_key(rule.action)
-    return ' '.join([name, direction, src_ip_prefix, dst_ip_prefix, protocol, src_port, dst_port, ack, action])
+    return ' '.join(map(str,[name, direction, src_ip_prefix, dst_ip_prefix, protocol, src_port, dst_port, ack, action]))
 
 
 def line_to_rule(line:str):
     rule = Rule()
-    print_error = lambda fname: print("The "+fname+" field is not valid")
     fields = line.split(" ")
     if len(fields) != 9:
         return -1
@@ -119,7 +133,10 @@ def line_to_rule(line:str):
     # name
     if(not 0 < len(fields[0]) < 20):
         return -1
-    rule.name = fields[0]
+    rule.name = fields[0].encode('utf-8')
+
+    print_error = lambda fname: print("The "+fname+" field is not valid in rule "+rule.name)
+
     
     # direction
     res = direction_dict.get_value(fields[1])
@@ -182,11 +199,25 @@ def line_to_rule(line:str):
 
 def rule_to_bytes(rule: Rule):
     try:
+        """
+        
+        print("Name:", rule.name, "Type:", type(rule.name))
+        print("Direction:", rule.direction, "Type:", type(rule.direction))
+        print("Source IP:", rule.src_ip, "Type:", type(rule.src_ip))
+        print("Source Prefix Size:", rule.src_prefix_size, "Type:", type(rule.src_prefix_size))
+        print("Destination IP:", rule.dst_ip, "Type:", type(rule.dst_ip))
+        print("Destination Prefix Size:", rule.dst_prefix_size, "Type:", type(rule.dst_prefix_size))
+        print("Source Port:", rule.src_port, "Type:", type(rule.src_port))
+        print("Destination Port:", rule.dst_port, "Type:", type(rule.dst_port))
+        print("Protocol:", rule.protocol, "Type:", type(rule.protocol))
+        print("Ack:", rule.ack, "Type:", type(rule.ack))
+        print("Action:", rule.action, "Type:", type(rule.action))
+        """
         data = struct.pack(rule_format, rule.name, rule.direction, rule.src_ip,
                             rule.src_prefix_size, rule.dst_ip, rule.dst_prefix_size,
                             rule.src_port, rule.dst_port, rule.protocol, rule.ack, rule.action)
         return data
-    except:
+    except ValueError:
         print("Error converting rule to bytes, check entry values")
         return -1
 
@@ -217,14 +248,19 @@ def load_rules(path):
     rules = []
     with open(path, "r") as file:
         for line in file.readlines():
-            rule = line_to_rule(line)
+            rule = line_to_rule(line.rstrip())
             if(rule != -1):
                 rules.append(rule)
             else:
                 return -1
     
+    rules_data = b''.join([rule_to_bytes(r) for r in rules])
+    
+
+    #os.system("echo hey > "+path_to_rules_attr)
     with open(path_to_rules_attr, "wb") as rules_attr:
-        rules_attr.write(b''.join([rule_to_bytes(r) for r in rules]))
+        rules_attr.write(rules_data)
+        
 
     return 0
 
@@ -232,13 +268,13 @@ def load_rules(path):
 def show_rules():
     rules = []
     try:
-        with open(path_to_rules_attr, "rb") as file:
+        with open(path_to_rules_attr, "rb") as rules_attr:
             while True:
-                rule_data = file.read(struct.calcsize(rule_format))
+                rule_data = rules_attr.read(struct.calcsize(rule_format))
                 if not rule_data:
                     break
 
-                rule = rule_from_bytes()
+                rule = rule_from_bytes(rule_data)
                 if(rule == -1):
                     print("Error converting bytes to rule")
                     return -1
@@ -260,12 +296,11 @@ def main():
         if len(sys.argv) != 3:
             print("error: there should be exactly 2 arguments given")
             sys.exit(-1)
-        load_rules(sys.argv[1])
+        load_rules(sys.argv[2])
     elif len(sys.argv) != 2:
         print("error: too many arguments")
         sys.exit(-1)
-
-    if sys.argv[1] == "show_rules":
+    elif sys.argv[1] == "show_rules":
         show_rules()
     elif sys.argv[1] == "show_log":
         pass  # TODO: Implement show_log

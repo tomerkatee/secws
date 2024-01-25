@@ -42,8 +42,8 @@ typedef struct {
 static struct klist log_klist;
 // static int num_log_rows = 0;
 static log_node* tail = NULL;
-static rule_t rules[MAX_RULES];
-static int num_rules = 0;
+static rule_t custom_rules[MAX_RULES];
+static int num_custom_rules = 0;
 
 static rule_t loopback_rule = {
 	.rule_name = "loopback",
@@ -316,9 +316,9 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 		return NF_DROP;
 	}
 
-	for (i = 0; i < num_rules; i++)
+	for (i = 0; i < num_custom_rules; i++)
 	{
-		rule = rules+i;
+		rule = custom_rules+i;
 		if (rule_match(rule, skb))
 		{
 			// TODO: add reasons
@@ -446,51 +446,94 @@ static int is_action(unsigned char number) {
 	}
 }
 
+const char* set_rule_from_buffer(const char* buff, rule_t *rule)
+{
+	const char *curr = buff;
+
+	printk(KERN_INFO "1\n");
+	memcpy(&rule->rule_name, curr, sizeof(rule->rule_name));
+	curr += sizeof(rule->rule_name);
+
+	printk(KERN_INFO "%s\n", rule->rule_name);
+	memcpy(&rule->direction, curr, sizeof(rule->direction));
+	curr += sizeof(rule->direction);
+
+	printk(KERN_INFO "%d\n", rule->direction);
+
+	memcpy(&rule->src_ip, curr, sizeof(rule->src_ip));
+	curr += sizeof(rule->src_ip);
+	
+	printk(KERN_INFO "%d\n", rule->src_ip);
+
+
+	memcpy(&rule->src_prefix_size, curr, sizeof(rule->src_prefix_size));
+	curr += sizeof(rule->src_prefix_size);
+
+	printk(KERN_INFO "%d\n", rule->src_prefix_size);
+
+
+	memcpy(&rule->dst_ip, curr, sizeof(rule->dst_ip));
+	curr += sizeof(rule->dst_ip);
+
+	memcpy(&rule->dst_prefix_size, curr, sizeof(rule->dst_prefix_size));
+	curr += sizeof(rule->dst_prefix_size);
+
+
+	memcpy(&rule->src_port, curr, sizeof(rule->src_port));
+	curr += sizeof(rule->src_port);
+	printk(KERN_INFO "%d\n", rule->src_port);
+
+
+	memcpy(&rule->dst_port, curr, sizeof(rule->dst_port));
+	curr += sizeof(rule->dst_port);
+
+	memcpy(&rule->protocol, curr, sizeof(rule->protocol));
+	curr += sizeof(rule->protocol);
+
+	memcpy(&rule->ack, curr, sizeof(rule->ack));
+	curr += sizeof(rule->ack);
+
+	memcpy(&rule->action, curr, sizeof(rule->action));
+	curr += sizeof(rule->action);
+
+	if (!(rule->src_prefix_size <= 32
+		&& rule->dst_prefix_size <= 32
+		&& rule->src_port <= PORT_ABOVE_1023
+		&& rule->dst_port <= PORT_ABOVE_1023
+		&& is_prot_t(rule->protocol)
+		&& is_ack_t(rule->ack)
+		&& is_action(rule->action)
+		&& is_direction_t(rule->direction)))
+		return NULL;
+
+	rule->src_prefix_mask = subnet_prefix_size_to_mask(rule->src_prefix_size);
+	rule->dst_prefix_mask = subnet_prefix_size_to_mask(rule->dst_prefix_size);
+	
+	return curr;
+}
+
 ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	
-
-	rule_t *temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
-	const char* curr = buf;
-	rule_t rule;
-	unsigned char direction, ack, protocol, action;
-
-	int num_matches, num_chars_scanned;
 	int i;
-	for(i = 0; i < MAX_RULES; i++, curr+=num_chars_scanned)
+	rule_t *temp;
+	const char* curr = buf;
+	temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
+
+	
+	for(i = 0; i < MAX_RULES && curr-buf < count; i++)
 	{
-		rule = temp[i];
-
-		num_matches = sscanf(curr, "%19s %hhu %u %hhu %u %hhu %hu %hu %hhu %hhu %hhu%n", rule.rule_name, &direction, &rule.src_ip, &rule.src_prefix_size, &rule.dst_ip, &rule.dst_prefix_size, &rule.src_port, &rule.dst_port, &protocol, &ack, &action, &num_chars_scanned);
-
-		if(num_matches == 0)
-			break;
-		
-		if(num_matches != NUM_RULE_CATEGORIES)
+		printk(KERN_INFO "made it to %d\n", i);
+		if(!(curr = set_rule_from_buffer(curr, temp+i)))
 			return -1;
-
-		if (!(rule.src_prefix_size <= 32
-			&& rule.dst_prefix_size <= 32
-			&& rule.src_port <= PORT_ABOVE_1023
-			&& rule.dst_port <= PORT_ABOVE_1023
-			&& is_prot_t(protocol)
-			&& is_ack_t(ack)
-			&& is_action(action)
-			&& is_direction_t(direction)))
+		if(curr-buf > count)
 			return -1;
-
-		rule.src_prefix_mask = subnet_prefix_size_to_mask(rule.src_prefix_size);
-		rule.dst_prefix_mask = subnet_prefix_size_to_mask(rule.dst_prefix_size);
-		rule.direction = direction;
-		rule.protocol = protocol;
-		rule.ack = ack;
-		rule.action = action;
 	}
 
-	num_rules = i;
+	num_custom_rules = i;
 
-	for (i = 0; i < num_rules; i++) 
-		rules[i] = temp[i];
+	for (i = 0; i < num_custom_rules; i++) 
+		custom_rules[i] = temp[i];
 	
 	kfree(temp);
 
@@ -579,8 +622,8 @@ char* copy_rule_to_buffer(char *buff, rule_t *rule)
 	memcpy(curr, &rule->src_ip, sizeof(rule->src_ip));
 	curr += sizeof(rule->src_ip);
 
-	memcpy(curr, &rule->src_prefix_mask, sizeof(rule->src_prefix_mask));
-	curr += sizeof(rule->src_prefix_mask);
+	//memcpy(curr, &rule->src_prefix_mask, sizeof(rule->src_prefix_mask));
+	//curr += sizeof(rule->src_prefix_mask);
 
 	memcpy(curr, &rule->src_prefix_size, sizeof(rule->src_prefix_size));
 	curr += sizeof(rule->src_prefix_size);
@@ -588,8 +631,8 @@ char* copy_rule_to_buffer(char *buff, rule_t *rule)
 	memcpy(curr, &rule->dst_ip, sizeof(rule->dst_ip));
 	curr += sizeof(rule->dst_ip);
 
-	memcpy(curr, &rule->dst_prefix_mask, sizeof(rule->dst_prefix_mask));
-	curr += sizeof(rule->dst_prefix_mask);
+	//memcpy(curr, &rule->dst_prefix_mask, sizeof(rule->dst_prefix_mask));
+	//curr += sizeof(rule->dst_prefix_mask);
 
 	memcpy(curr, &rule->dst_prefix_size, sizeof(rule->dst_prefix_size));
 	curr += sizeof(rule->dst_prefix_size);
@@ -617,9 +660,9 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 	char *curr = buf;
 	rule_t* rule;
 	int i;
-	for (i = -1; i <= num_rules; i++)
+	for (i = -1; i <= num_custom_rules; i++)
 	{
-		rule = i == -1 ? &loopback_rule : (i == num_rules ? &default_rule : rules+i);
+		rule = i == -1 ? &loopback_rule : (i == num_custom_rules ? &default_rule : custom_rules+i);
 
 		curr = copy_rule_to_buffer(curr, rule);
 	}
