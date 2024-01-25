@@ -446,8 +446,58 @@ static int is_action(unsigned char number) {
 	}
 }
 
+ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	
 
+	rule_t *temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
+	const char* curr = buf;
+	rule_t rule;
+	unsigned char direction, ack, protocol, action;
 
+	int num_matches, num_chars_scanned;
+	int i;
+	for(i = 0; i < MAX_RULES; i++, curr+=num_chars_scanned)
+	{
+		rule = temp[i];
+
+		num_matches = sscanf(curr, "%19s %hhu %u %hhu %u %hhu %hu %hu %hhu %hhu %hhu%n", rule.rule_name, &direction, &rule.src_ip, &rule.src_prefix_size, &rule.dst_ip, &rule.dst_prefix_size, &rule.src_port, &rule.dst_port, &protocol, &ack, &action, &num_chars_scanned);
+
+		if(num_matches == 0)
+			break;
+		
+		if(num_matches != NUM_RULE_CATEGORIES)
+			return -1;
+
+		if (!(rule.src_prefix_size <= 32
+			&& rule.dst_prefix_size <= 32
+			&& rule.src_port <= PORT_ABOVE_1023
+			&& rule.dst_port <= PORT_ABOVE_1023
+			&& is_prot_t(protocol)
+			&& is_ack_t(ack)
+			&& is_action(action)
+			&& is_direction_t(direction)))
+			return -1;
+
+		rule.src_prefix_mask = subnet_prefix_size_to_mask(rule.src_prefix_size);
+		rule.dst_prefix_mask = subnet_prefix_size_to_mask(rule.dst_prefix_size);
+		rule.direction = direction;
+		rule.protocol = protocol;
+		rule.ack = ack;
+		rule.action = action;
+	}
+
+	num_rules = i;
+
+	for (i = 0; i < num_rules; i++) 
+		rules[i] = temp[i];
+	
+	kfree(temp);
+
+	return count;	
+}
+
+/*
 ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	rule_t *temp = (rule_t*)kmalloc(sizeof(rule_t)*MAX_RULES, GFP_KERNEL);
@@ -497,6 +547,8 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 	return count;	
 }
 
+*/
+
 /*
 ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
@@ -517,7 +569,8 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 char* copy_rule_to_buffer(char *buff, rule_t *rule)
 {
 	char *curr = buff;
-		memcpy(curr, rule->rule_name, sizeof(rule->rule_name));
+
+	memcpy(curr, rule->rule_name, sizeof(rule->rule_name));
 	curr += sizeof(rule->rule_name);
 
 	memcpy(curr, &rule->direction, sizeof(rule->direction));
