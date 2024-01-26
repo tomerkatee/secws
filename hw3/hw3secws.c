@@ -16,11 +16,7 @@ static struct nf_hook_ops nfho_fwd;
 typedef __be32 ip_t;
 typedef __be16 port_t;
 
-static int major_number;
-static struct class* sysfs_class = NULL;
-static struct device* rules_device = NULL;
-static struct device* log_device = NULL;
-static log_iter read_log_iter;
+
 
 
 #define MAX_FORMAT_SIZE 40
@@ -33,16 +29,29 @@ static log_iter read_log_iter;
 //#define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
 #define subnet_prefix_size_to_mask(size) ((size) ? (1 << (size))-1 : 0)
 
+
 typedef struct {
 	int rows_count;
     log_row_t* data;
     struct klist_node node;
 } log_node;
 
+
+typedef struct {
+	struct klist_iter nodes_iter;
+	int i;
+} log_iter;
+
+
 static struct klist log_klist;
 static log_node* tail = NULL;
 static rule_t custom_rules[MAX_RULES];
 static int num_custom_rules = 0;
+static int major_number;
+static struct class* sysfs_class = NULL;
+static struct device* rules_device = NULL;
+static struct device* log_device = NULL;
+static log_iter read_log_iter;
 
 static rule_t loopback_rule = {
 	.rule_name = "loopback",
@@ -76,11 +85,6 @@ static rule_t default_rule = {
 	.action = NF_DROP
 };
 
-
-typedef struct {
-	struct klist_iter nodes_iter;
-	int i;
-} log_iter;
 
 static log_node* cast_to_log_node(struct klist_node* knode)
 {
@@ -332,8 +336,8 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 
 
 
-int my_open(struct inode *_inode, struct file *_file) {
-	log_iter_init(read_log_iter);
+int open_log(struct inode *_inode, struct file *_file) {
+	log_iter_init(&read_log_iter);
 	return 0;
 }
 
@@ -370,64 +374,28 @@ char* copy_log_row_to_buffer(char *buff, log_row_t *log)
 
 	return curr;
 }
-ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
-
-	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
-	
+ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {	
 	log_row_t *row;
 	char *curr = buff;
 
-	printk(KERN_DEBUG "length of buffer: %ld\n", length);
+	printk(KERN_DEBUG "length of buffer: %d\n", length);
 
-	if(length < LOG_ROW_BUFFER_SIZE)
+	if(length < sizeof(log_row_t))
 		return -ENOSPC;
 
-	while((length-(curr-buff)) > LOG_ROW_BUFFER_SIZE && (row = log_iter_next(&read_log_iter)))
+	while((length-(curr-buff)) > sizeof(log_row_t) && (row = log_iter_next(&read_log_iter)))
 	{
-		curr = copy_log_row_to_buffer(curr, &row);
+		curr = copy_log_row_to_buffer(curr, row);
 	}
 	
 	return curr-buff;
 	
 }
-/* ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
-
-	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
-	
-	int written, total=0;
-	int left = length;
-	
-	log_row_t *row;
-	char *curr = buff;
-
-	printk(KERN_DEBUG "a\n");
-
-	while((row = log_iter_next(&read_log_iter)))
-	{
-		printk(KERN_DEBUG "b\n");
-		
-		written = scnprintf(log_row_buffer, LOG_ROW_BUFFER_SIZE, "%lu %u %u %u %u %u %u %u %u\n",
-		row->timestamp, row->src_ip, row->dst_ip, row->src_port, row->dst_port,
-		row->protocol, row->action, row->reason, row->count);
-
-		if(copy_to_user(curr, log_row_buffer, written))
-			return -EFAULT;
-		curr += written;
-		total += written;
-		printk(KERN_DEBUG "%d\n", total);
-
-	}
-	printk(KERN_DEBUG "c\n");
-
-	
-	return 0;
-	
-} */
 
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
-	.read = read_log
+	.read = read_log,
 	.open = open_log
 };
 
@@ -569,17 +537,11 @@ char* copy_rule_to_buffer(char *buff, rule_t *rule)
 	memcpy(curr, &rule->src_ip, sizeof(rule->src_ip));
 	curr += sizeof(rule->src_ip);
 
-	//memcpy(curr, &rule->src_prefix_mask, sizeof(rule->src_prefix_mask));
-	//curr += sizeof(rule->src_prefix_mask);
-
 	memcpy(curr, &rule->src_prefix_size, sizeof(rule->src_prefix_size));
 	curr += sizeof(rule->src_prefix_size);
 
 	memcpy(curr, &rule->dst_ip, sizeof(rule->dst_ip));
 	curr += sizeof(rule->dst_ip);
-
-	//memcpy(curr, &rule->dst_prefix_mask, sizeof(rule->dst_prefix_mask));
-	//curr += sizeof(rule->dst_prefix_mask);
 
 	memcpy(curr, &rule->dst_prefix_size, sizeof(rule->dst_prefix_size));
 	curr += sizeof(rule->dst_prefix_size);

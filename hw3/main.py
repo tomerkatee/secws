@@ -298,7 +298,7 @@ def line_from_log_row(log_row: LogRow):
     reason = reason if reason != -1 else log_row.reason
     count = log_row.count
 
-    return ' '.join(map(str,[timestamp, src_ip, dst_ip, src_port, dst_port, protocol, action, reason, count]))
+    return '\t\t'.join(map(str,[timestamp, src_ip, dst_ip, src_port, dst_port, protocol, action, reason, count]))
 
 
 def show_log():
@@ -321,7 +321,7 @@ def show_log():
         print('\n'.join([line_from_log_row(r) for r in log_rows]))
 
     except IOError as e:
-        print("Error opening log file: "+e)
+        print("Error opening log file: "+str(e))
         return -1
     
         
