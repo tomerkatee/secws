@@ -3,8 +3,8 @@
 import struct
 import os
 import sys
-from enum import Enum
 import ipaddress
+import datetime
 
 class TwoDirectionalDict:
     # assuming that forward_dict is injective
@@ -23,45 +23,19 @@ class TwoDirectionalDict:
             return self.reverse_dict[value]
         except KeyError:
             return -1
-    
-    
 
-"""
-
-class ValidatableEnum(Enum):
-    @classmethod
-    def is_valid_field(cls, field:str):
-        return field.isalpha() and field.islower() and field.upper() in cls.__members__ 
-
-class Direction(ValidatableEnum):
-    IN = 1
-    OUT = 2
-    ANY = 3
-
-class Ack(ValidatableEnum):
-    NO = 1
-    YES = 2
-    ANY = 3
-
-class Protocol(ValidatableEnum):
-    ICMP = 1
-    TCP = 6
-    UDP = 17
-    OTHER = 255
-    ANY = 143
-
-"""
 
 path_to_rules_attr = "/sys/class/fw/rules/rules"
 path_to_reset_attr = "/sys/class/fw/fw_log/reset"
 path_to_log = "/dev/fw_log"
 rule_format = "<20s I I B I B H H B I B"
-log_format = "<L B B "
+log_format = "<L B B I I H H i I"
 port_dict = TwoDirectionalDict({">1023": 1023, "any": 0})
 protocol_dict = TwoDirectionalDict({"ICMP": 1, "TCP": 6, "UDP": 17, "other": 255, "any": 143})
 direction_dict = TwoDirectionalDict({"in": 1, "out": 2, "any": 3})
 ack_dict = TwoDirectionalDict({"no": 1, "yes": 2, "any": 3})
 action_dict = TwoDirectionalDict({"accept": 1, "drop": 0})
+reason_dict = TwoDirectionalDict({"REASON_FW_INACTIVE" : -1, "REASON_NO_MATCHING_RULE": -2, "REASON_XMAS_PACKET": -4, "REASON_ILLEGAL_VALUE": -6})
 
 class Rule:
     def __init__(self, name=None, direction=None, src_ip=None, src_prefix_size=None,
@@ -87,6 +61,24 @@ class Rule:
     def ip_str_to_int(ip_str):
         return int.from_bytes(ipaddress.IPv4Address(ip_str).packed, byteorder='little')
 
+
+class LogRow:
+    def __init__(self, timestamp=None, protocol=None, action=None, src_ip=None, dst_ip=None,
+                 src_port=None, dst_port=None, reason=None, count=None):
+        self.timestamp = timestamp
+        self.protocol = protocol
+        self.action = action
+        self.src_ip = src_ip
+        self.dst_ip = dst_ip
+        self.src_port = src_port
+        self.dst_port = dst_port
+        self.reason = reason
+        self.count = count
+
+    @staticmethod 
+    def timestamp_seconds_to_format(ts_epoch):
+        #TODO: ask about month-day order
+        return datetime.datetime.fromtimestamp(ts_epoch).strftime('%d/%m/%Y %H:%M:%S')
 
 
 def try_convert_to_ip_and_prefix(s):
@@ -202,20 +194,6 @@ def line_to_rule(line:str):
 
 def rule_to_bytes(rule: Rule):
     try:
-        """
-        
-        print("Name:", rule.name, "Type:", type(rule.name))
-        print("Direction:", rule.direction, "Type:", type(rule.direction))
-        print("Source IP:", rule.src_ip, "Type:", type(rule.src_ip))
-        print("Source Prefix Size:", rule.src_prefix_size, "Type:", type(rule.src_prefix_size))
-        print("Destination IP:", rule.dst_ip, "Type:", type(rule.dst_ip))
-        print("Destination Prefix Size:", rule.dst_prefix_size, "Type:", type(rule.dst_prefix_size))
-        print("Source Port:", rule.src_port, "Type:", type(rule.src_port))
-        print("Destination Port:", rule.dst_port, "Type:", type(rule.dst_port))
-        print("Protocol:", rule.protocol, "Type:", type(rule.protocol))
-        print("Ack:", rule.ack, "Type:", type(rule.ack))
-        print("Action:", rule.action, "Type:", type(rule.action))
-        """
         data = struct.pack(rule_format, rule.name, rule.direction, rule.src_ip,
                             rule.src_prefix_size, rule.dst_ip, rule.dst_prefix_size,
                             rule.src_port, rule.dst_port, rule.protocol, rule.ack, rule.action)
@@ -259,13 +237,11 @@ def load_rules(path):
     
     rules_data = b''.join([rule_to_bytes(r) for r in rules])
     
-
-    #os.system("echo hey > "+path_to_rules_attr)
     with open(path_to_rules_attr, "wb") as rules_attr:
         rules_attr.write(rules_data)
         
-
     return 0
+
 
 
 def show_rules():
@@ -284,31 +260,68 @@ def show_rules():
                 
                 rules.append(rule)
 
-            print('\n'.join([line_from_rule(r) for r in rules]))
+        print('\n'.join([line_from_rule(r) for r in rules]))
 
     except IOError as e:
         print("Error opening rules file: "+e)
         return -1
     
-def show_log():
+def log_row_from_bytes(bin: bytes):
     try:
-        with open(path_to_log, 'rb') as log:
+        log_data = struct.unpack(log_format, bin)
+        log_row = LogRow()
+        
+        log_row.timestamp = log_data[0]
+        log_row.protocol = log_data[1]
+        log_row.action = log_data[2]
+        log_row.src_ip = log_data[3]
+        log_row.dst_ip = log_data[4]
+        log_row.src_port = log_data[5]
+        log_row.dst_port = log_data[6]
+        log_row.reason = log_data[7]
+        log_row.count = log_data[8]
+        return log_row
+    except:
+        return -1
+
+
+# here we can assume log_row is ok since it has come from kernel module
+def line_from_log_row(log_row: LogRow):
+    timestamp = LogRow.timestamp_seconds_to_format(log_row.timestamp)
+    src_ip = Rule.int_to_ip_str(log_row.src_ip)
+    dst_ip = Rule.int_to_ip_str(log_row.dst_ip)
+    src_port = log_row.src_port
+    dst_port = log_row.dst_port
+    protocol = protocol_dict.get_key(log_row.protocol)
+    action = action_dict.get_key(log_row.action)
+    reason = reason_dict.get_key(log_row.reason)
+    reason = reason if reason != -1 else log_row.reason
+    count = log_row.count
+
+    return ' '.join(map(str,[timestamp, src_ip, dst_ip, src_port, dst_port, protocol, action, reason, count]))
+
+
+def show_log():
+    log_rows = []
+    try:
+        with open(path_to_log, 'rb') as log_file:
             while True:
-                rule_data = rules_attr.read(struct.calcsize(rule_format))
-                if not rule_data:
+                log_data = log_file.read(struct.calcsize(log_format))
+                if not log_data:
                     break
 
-                rule = rule_from_bytes(rule_data)
-                if(rule == -1):
-                    print("Error converting bytes to rule")
+                log_row = log_row_from_bytes(log_data)
+                if(log_row == -1):
+                    print("Error converting bytes to log row")
                     return -1
                 
-                rules.append(rule)
+                log_rows.append(log_row)
 
-            print('\n'.join([line_from_rule(r) for r in rules]))
+        print('\t\t\t'.join(["timestamp", "src_ip", "dst_ip", "src_port", "dst_port", "protocol", "action", "reason", "count"]))
+        print('\n'.join([line_from_log_row(r) for r in log_rows]))
 
     except IOError as e:
-        print("Error opening rules file: "+e)
+        print("Error opening log file: "+e)
         return -1
     
         

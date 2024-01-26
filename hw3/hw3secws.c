@@ -20,18 +20,18 @@ static int major_number;
 static struct class* sysfs_class = NULL;
 static struct device* rules_device = NULL;
 static struct device* log_device = NULL;
-// static log_iter read_log_iter;
+static log_iter read_log_iter;
 
 
 #define MAX_FORMAT_SIZE 40
 #define LOGS_CHUNK_SIZE 8
 #define NUM_RULE_CATEGORIES 9
 #define IP_ANY 0
-#define LOG_ROW_BUFFER_SIZE 200
+#define LOG_ROW_BUFFER_SIZE 64
 
 //TODO: fix!
-#define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
-
+//#define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
+#define subnet_prefix_size_to_mask(size) ((size) ? (1 << (size))-1 : 0)
 
 typedef struct {
 	int rows_count;
@@ -329,15 +329,68 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	add_log(create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE));
 	return default_rule.action;
 }
-/*
 
-int my_open(struct inode *_inode, struct file *_file)
-{
-	log_iter_init(&read_log_iter);
+
+
+int my_open(struct inode *_inode, struct file *_file) {
+	log_iter_init(read_log_iter);
 	return 0;
 }
-*/
+
+char* copy_log_row_to_buffer(char *buff, log_row_t *log)
+{
+	char *curr = buff;
+
+	memcpy(curr, &log->timestamp, sizeof(log->timestamp));
+	curr += sizeof(log->timestamp);
+
+	memcpy(curr, &log->protocol, sizeof(log->protocol));
+	curr += sizeof(log->protocol);
+
+	memcpy(curr, &log->action, sizeof(log->action));
+	curr += sizeof(log->action);
+
+	memcpy(curr, &log->src_ip, sizeof(log->src_ip));
+	curr += sizeof(log->src_ip);
+
+	memcpy(curr, &log->dst_ip, sizeof(log->dst_ip));
+	curr += sizeof(log->dst_ip);
+
+	memcpy(curr, &log->src_port, sizeof(log->src_port));
+	curr += sizeof(log->src_port);
+
+	memcpy(curr, &log->dst_port, sizeof(log->dst_port));
+	curr += sizeof(log->dst_port);
+
+	memcpy(curr, &log->reason, sizeof(log->reason));
+	curr += sizeof(log->reason);
+
+	memcpy(curr, &log->count, sizeof(log->count));
+	curr += sizeof(log->count);
+
+	return curr;
+}
 ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
+
+	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
+	
+	log_row_t *row;
+	char *curr = buff;
+
+	printk(KERN_DEBUG "length of buffer: %ld\n", length);
+
+	if(length < LOG_ROW_BUFFER_SIZE)
+		return -ENOSPC;
+
+	while((length-(curr-buff)) > LOG_ROW_BUFFER_SIZE && (row = log_iter_next(&read_log_iter)))
+	{
+		curr = copy_log_row_to_buffer(curr, &row);
+	}
+	
+	return curr-buff;
+	
+}
+/* ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
 
 	char log_row_buffer[LOG_ROW_BUFFER_SIZE];
 	
@@ -369,12 +422,13 @@ ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {
 	
 	return 0;
 	
-}
+} */
 
 
 static struct file_operations fops = {
 	.owner = THIS_MODULE,
 	.read = read_log
+	.open = open_log
 };
 
 
