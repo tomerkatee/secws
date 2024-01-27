@@ -6,19 +6,27 @@
 #include <linux/string.h>
 
 
+/*
+
+QUESTIONS:
+1. fw_log naming
+2. identifying loopback message
+3. user provides with a rule named default/loopback
+4. freeing klist(?)
+
+
+*/
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tomer Katee");
 
-static struct nf_hook_ops nfho_fwd;
 
-#define CHRDEV_NAME "firewall"
 
 typedef __be32 ip_t;
 typedef __be16 port_t;
 
 
-
-
+#define CHRDEV_NAME "firewall"
 #define MAX_FORMAT_SIZE 40
 #define LOGS_CHUNK_SIZE 8
 #define NUM_RULE_CATEGORIES 9
@@ -43,6 +51,7 @@ typedef struct {
 } log_iter;
 
 
+static struct nf_hook_ops nfho_fwd;
 static struct klist log_klist;
 static log_node* tail = NULL;
 static rule_t custom_rules[MAX_RULES];
@@ -566,29 +575,23 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	struct klist_node *prev;
 	struct klist_node *curr;
 
-	printk(KERN_DEBUG "1\n");
 	if(!tail)
 		return count;
 
-	printk(KERN_DEBUG "2\n");
-
 	klist_iter_init_node(&log_klist, &iter, &tail->node);
-	printk(KERN_DEBUG "3\n");
 
 	do 
 	{
-		printk(KERN_DEBUG "4\n");
 		curr = iter.i_cur;
 		curr_log_node = cast_to_log_node(curr);
 		kfree(curr_log_node->data);
 		prev = klist_prev(&iter);
-		klist_remove(curr);
+		klist_del(curr);
 		kfree(curr_log_node);
 	} while(prev);
 
-	printk(KERN_DEBUG "5\n");
-
 	klist_iter_exit(&iter);
+	klist_init(&log_klist, NULL, NULL);
 	tail = NULL;
 	return count;
 }
