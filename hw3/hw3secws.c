@@ -103,29 +103,15 @@ static log_row_t* log_iter_next(log_iter* iter)
 {
 	log_node* curr_log_node = cast_to_log_node(iter->nodes_iter.i_cur);
 
-	printk(KERN_DEBUG "5\n");
 	if(!curr_log_node)
 		return NULL;
-	printk(KERN_DEBUG "6\n");
 
 	if(iter->i < curr_log_node->rows_count)
 		return &curr_log_node->data[iter->i++];
 
-	
-	printk(KERN_DEBUG "7\n");
-
-
-
 	iter->i = 0;
 	if(klist_next(&iter->nodes_iter))
-	{
-		printk(KERN_DEBUG "8\n");
-
 		return log_iter_next(iter);
-
-	}
-	
-	printk(KERN_DEBUG "9\n");
 
 	klist_iter_exit(&iter->nodes_iter);
 	return NULL;
@@ -278,9 +264,6 @@ static void add_log(log_row_t log_row)
 	log_iter iter;
 	log_row_t *curr;
 	
-	printk(KERN_DEBUG "1\n");
-
-	
 	log_iter_init(&iter);
 
 	while((curr = log_iter_next(&iter)))
@@ -307,8 +290,6 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	struct iphdr* ip_header = ip_hdr(skb);
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
-
-	printk(KERN_DEBUG "packet_arrived\n");
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -377,8 +358,6 @@ char* copy_log_row_to_buffer(char *buff, log_row_t *log)
 ssize_t read_log(struct file *filp, char *buff, size_t length, loff_t *offp) {	
 	log_row_t *row;
 	char *curr = buff;
-
-	printk(KERN_DEBUG "length of buffer: %d\n", length);
 
 	if(length < sizeof(log_row_t))
 		return -ENOSPC;
@@ -585,22 +564,32 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	struct klist_iter iter;
 	log_node *curr_log_node;
 	struct klist_node *prev;
+	struct klist_node *curr;
 
+	printk(KERN_DEBUG "1\n");
 	if(!tail)
 		return count;
 
+	printk(KERN_DEBUG "2\n");
+
 	klist_iter_init_node(&log_klist, &iter, &tail->node);
+	printk(KERN_DEBUG "3\n");
 
 	do 
 	{
-		prev = klist_prev(&iter);
-		curr_log_node = cast_to_log_node(iter.i_cur);
+		printk(KERN_DEBUG "4\n");
+		curr = iter.i_cur;
+		curr_log_node = cast_to_log_node(curr);
 		kfree(curr_log_node->data);
-		klist_remove(iter.i_cur);
+		prev = klist_prev(&iter);
+		klist_remove(curr);
 		kfree(curr_log_node);
 	} while(prev);
 
+	printk(KERN_DEBUG "5\n");
+
 	klist_iter_exit(&iter);
+	tail = NULL;
 	return count;
 }
 
