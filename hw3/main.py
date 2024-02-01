@@ -6,6 +6,7 @@ import sys
 import ipaddress
 import datetime
 
+# a dict that can get value from key and key from value
 class TwoDirectionalDict:
     # assuming that forward_dict is injective
     def __init__(self, forward_dict:dict):
@@ -77,7 +78,6 @@ class LogRow:
 
     @staticmethod 
     def timestamp_seconds_to_format(ts_epoch):
-        #TODO: ask about month-day order
         return datetime.datetime.fromtimestamp(ts_epoch).strftime('%d/%m/%Y %H:%M:%S')
 
 
@@ -326,8 +326,6 @@ def show_log():
     
         
         
-
-
 def clear_log():
     with open(path_to_reset_attr, 'w') as reset_attr:
         reset_attr.write("0")

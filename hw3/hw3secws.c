@@ -6,17 +6,6 @@
 #include <linux/string.h>
 
 
-/*
-
-QUESTIONS:
-1. fw_log naming
-2. identifying loopback message
-3. user provides with a rule named default/loopback
-4. freeing klist(?)
-
-
-*/
-
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tomer Katee");
 
@@ -28,7 +17,7 @@ typedef __be16 port_t;
 
 #define CHRDEV_NAME "firewall"
 #define MAX_FORMAT_SIZE 40
-#define LOGS_CHUNK_SIZE 8
+#define LOG_CHUNK_SIZE 8
 #define NUM_RULE_CATEGORIES 9
 #define IP_ANY 0
 #define LOG_ROW_BUFFER_SIZE 64
@@ -95,6 +84,7 @@ static rule_t default_rule = {
 };
 
 
+// gets log_node reference from its klist_node
 static log_node* cast_to_log_node(struct klist_node* knode)
 {
 	return knode ? container_of(knode, log_node, node) : NULL;
@@ -195,11 +185,11 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	return 1;
 }
 
+//TODO: check xmas
 static int is_xmas_packet(struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
-
 	if(ip_header->protocol != PROT_TCP)
 		return 0;
 
@@ -244,12 +234,13 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 	return log_row;
 }
 
+// adds a chunk of empty log rows to the log list as a node
 static void add_log_node(void)
 {
 	log_node* log_node_p;
 	if(!(log_node_p = (log_node*)kmalloc(sizeof(log_node), GFP_KERNEL)))
 		printk(KERN_ERR "kmalloc failed\n");
-	if(!(log_node_p->data = (log_row_t*)kmalloc(sizeof(log_row_t) * LOGS_CHUNK_SIZE, GFP_KERNEL)))
+	if(!(log_node_p->data = (log_row_t*)kmalloc(sizeof(log_row_t) * LOG_CHUNK_SIZE, GFP_KERNEL)))
 		printk(KERN_ERR "kmalloc failed\n");
 	log_node_p->rows_count = 0;
 	klist_add_tail(&log_node_p->node, &log_klist);
@@ -267,7 +258,7 @@ static int compare_log_rows(log_row_t *r1, log_row_t *r2)
 		r1->reason == r2->reason;
 }
 
-
+// add a single log row to the log and add a log rows chunck if needed
 static void add_log(log_row_t log_row)
 {
 	log_iter iter;
@@ -285,7 +276,7 @@ static void add_log(log_row_t log_row)
 		}
 	}
 
-	if(!tail || tail->rows_count == LOGS_CHUNK_SIZE)
+	if(!tail || tail->rows_count == LOG_CHUNK_SIZE)
 		add_log_node();
 
 	// tail is now updated to the new log_node
@@ -323,7 +314,6 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	add_log(create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE));
 	return default_rule.action;
 }
-
 
 
 int open_log(struct inode *_inode, struct file *_file) {
@@ -566,7 +556,7 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 	return curr - buf;
 }
 
-
+// deletes all nodes from klist and refreshes it, frees all kmalloc-ed memory
 ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 
@@ -596,7 +586,6 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	return count;
 }
 
-// TODO: ask about perms of rules
 static DEVICE_ATTR(rules, S_IWUSR | S_IRUGO, display_rules, modify_rules);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, modify_reset);
 
@@ -618,7 +607,6 @@ static int register_sysfs_chrdev(void)
 	if (device_create_file(rules_device, (const struct device_attribute *)&dev_attr_rules.attr))
 		goto rules_attr_create_failed;
 	
-	// TODO: ask about device name
 	log_device = device_create(sysfs_class, NULL, MKDEV(major_number, MINOR_LOG), NULL, CLASS_NAME "_" DEVICE_NAME_LOG);
 	if (IS_ERR(log_device))
 		goto log_device_create_failed;
