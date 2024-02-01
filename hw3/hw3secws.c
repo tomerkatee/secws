@@ -22,9 +22,7 @@ typedef __be16 port_t;
 #define IP_ANY 0
 #define LOG_ROW_BUFFER_SIZE 64
 
-//TODO: fix!
-//#define subnet_prefix_size_to_mask(size) ((size) ? ~0 << (32 - (size)) : 0)
-#define subnet_prefix_size_to_mask(size) ((size) ? (1 << (size))-1 : 0)
+#define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
 
 
 typedef struct {
@@ -118,18 +116,18 @@ static log_row_t* log_iter_next(log_iter* iter)
 
 
 static ip_t is_addr_in_subnet(ip_t addr, ip_t subnet_addr, ip_t subnet_mask)
-{
+{	
 	return (addr & subnet_mask) == (subnet_addr & subnet_mask);
 }
 
 static int is_port_in_range(port_t port, port_t range)
 {
-	return range ? (range == 1023 ? port > 1023 : port==range) : 1;	
+	return range==PORT_ANY ? 1 : (range == PORT_ABOVE_1023 ? port > 1023 : port==range) ;	
 }
 
 static int is_protocol_in_range(u_int8_t prot, prot_t range)
 {
-	return range==PORT_ANY ? 1 : (prot==range ? 1 : range==PORT_OTHER);
+	return range==PROT_ANY ? 1 : (prot==range ? 1 : range==PORT_OTHER);
 }
 
 static int is_ack_in_range(unsigned short ack, ack_t range)
@@ -151,12 +149,11 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	if(rule->dst_ip != IP_ANY && !is_addr_in_subnet(ip_header->daddr, rule->dst_ip, rule->dst_prefix_mask))
 		return 0;
 
-	if(rule->direction==DIRECTION_IN && !strcmp(IN_NET_DEVICE_NAME, nic_name))
-		return 0;
-	
-	if(rule->direction==DIRECTION_OUT && !strcmp(OUT_NET_DEVICE_NAME, nic_name))
+	if(rule->direction==DIRECTION_IN && strcmp(OUT_NET_DEVICE_NAME, nic_name))
 		return 0;
 
+	if(rule->direction==DIRECTION_OUT && strcmp(IN_NET_DEVICE_NAME, nic_name))
+		return 0;
 
 	if(!is_protocol_in_range(packet_prot, rule->protocol))
 		return 0;
@@ -164,28 +161,29 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	if(packet_prot == PROT_TCP)
 	{
 		tcp_header = tcp_hdr(skb);
-		if(!is_port_in_range(tcp_header->source, rule->src_port))
+
+		if(!is_port_in_range(ntohs(tcp_header->source), rule->src_port))
 			return 0;
-		if(!is_port_in_range(tcp_header->dest, rule->dst_port))
+		if(!is_port_in_range(ntohs(tcp_header->dest), rule->dst_port))
 			return 0;
+
 		if(!is_ack_in_range(tcp_header->ack, rule->ack))
 			return 0;
 	}
-
-	if(packet_prot == PROT_UDP)
+	else if(packet_prot == PROT_UDP)
 	{
 		udp_header = udp_hdr(skb);
-		if(!is_port_in_range(udp_header->source, rule->src_port))
+		if(!is_port_in_range(ntohs(udp_header->source), rule->src_port))
 			return 0;
 	
-		if(!is_port_in_range(udp_header->dest, rule->dst_port))
+		if(!is_port_in_range(ntohs(udp_header->dest), rule->dst_port))
 			return 0;
 	}
 
 	return 1;
 }
 
-//TODO: check xmas
+
 static int is_xmas_packet(struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
@@ -217,15 +215,19 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 	if(ip_header->protocol == PROT_TCP)
 	{
 		tcp_header = tcp_hdr(skb);
-		log_row.src_port = tcp_header->source;
-		log_row.dst_port = tcp_header->dest;
+		log_row.src_port = ntohs(tcp_header->source);
+		log_row.dst_port = ntohs(tcp_header->dest);
 	}
-
-	if(ip_header->protocol == PROT_UDP)
+	else if(ip_header->protocol == PROT_UDP)
 	{
 		udp_header = udp_hdr(skb);
-		log_row.src_port = udp_header->source;
-		log_row.dst_port = udp_header->dest;
+		log_row.src_port = ntohs(udp_header->source);
+		log_row.dst_port = ntohs(udp_header->dest);
+	}
+	else 
+	{
+		log_row.src_port = 0;
+		log_row.dst_port = 0;
 	}
 
 	log_row.reason = reason;
@@ -290,6 +292,7 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	struct iphdr* ip_header = ip_hdr(skb);
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
+	printk("hey\n");
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -305,8 +308,7 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 		rule = custom_rules+i;
 		if (rule_match(rule, skb))
 		{
-			// TODO: add reasons
-			reason = i;
+			reason = i+1; // +1 becuase of the first loopback rule
 			add_log(create_log(skb, rule->action, reason));
 			return rule->action;
 		}

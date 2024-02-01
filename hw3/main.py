@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import socket
 import struct
 import os
 import sys
@@ -107,7 +107,7 @@ def try_convert_to_port(s):
 def line_from_rule(rule: Rule):
     name = rule.name.rstrip(b'\x00').decode('utf-8')
     direction = direction_dict.get_key(rule.direction)
-    get_ip_prefix = lambda ip,prefix_size: Rule.int_to_ip_str(ip) + "/" + str(prefix_size)
+    get_ip_prefix = lambda ip,prefix_size: "any" if prefix_size == 0 else Rule.int_to_ip_str(ip) + "/" + str(prefix_size)
     src_ip_prefix = get_ip_prefix(rule.src_ip, rule.src_prefix_size)
     dst_ip_prefix = get_ip_prefix(rule.dst_ip, rule.dst_prefix_size)
     protocol = protocol_dict.get_key(rule.protocol)
@@ -263,7 +263,7 @@ def show_rules():
         print('\n'.join([line_from_rule(r) for r in rules]))
 
     except IOError as e:
-        print("Error opening rules file: "+e)
+        print("Error opening rules file: "+str(e))
         return -1
     
 def log_row_from_bytes(bin: bytes):

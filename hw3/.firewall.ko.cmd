@@ -1,1 +1,1 @@
-cmd_/home/fw/sf/homework/hw3/firewall.ko := ld -r -m elf_i386 -T ./scripts/module-common.lds --build-id  -o /home/fw/sf/homework/hw3/firewall.ko /home/fw/sf/homework/hw3/firewall.o /home/fw/sf/homework/hw3/firewall.mod.o ;  true
+cmd_/media/sf_fw_sf/homework/hw3/firewall.ko := ld -r -m elf_i386 -T ./scripts/module-common.lds --build-id  -o /media/sf_fw_sf/homework/hw3/firewall.ko /media/sf_fw_sf/homework/hw3/firewall.o /media/sf_fw_sf/homework/hw3/firewall.mod.o ;  true

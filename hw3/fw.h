@@ -37,8 +37,8 @@ typedef enum {
 #define DEVICE_NAME_CONN_TAB		"conn_tab"
 #define CLASS_NAME					"fw"
 #define LOOPBACK_NET_DEVICE_NAME	"lo"
-#define IN_NET_DEVICE_NAME			"eth1"
-#define OUT_NET_DEVICE_NAME			"eth2"
+#define IN_NET_DEVICE_NAME			"enp0s8"
+#define OUT_NET_DEVICE_NAME			"enp0s9"
 
 // auxiliary values, for your convenience
 #define IP_VERSION		(4)

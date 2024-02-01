@@ -1,3 +1,3 @@
-/home/fw/sf/homework/hw3/firewall.ko
-/home/fw/sf/homework/hw3/hw3secws.o
+/media/sf_fw_sf/homework/hw3/firewall.ko
+/media/sf_fw_sf/homework/hw3/hw3secws.o
 

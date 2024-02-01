@@ -1,0 +1,8 @@
+from scapy.all import *
+
+
+packet = IP(dst="10.1.1.1") / TCP(sport=53, dport=2000)
+
+response = sr(packet)
+print(response)
+
