@@ -38,3 +38,11 @@ each rule is unpacked with the 'struct' module into a Rule. afterwards all the r
 become strings and printed as a table.
 Each log row is read as binary, unpacked with 'struct' into a LogRow object and then becomes str for printing.
 For clearing the log, a simple "0" is written to /sys/class/fw/fw_log/reset sysfs_attr.
+
+
+
+I also noticed that for srcIP spoofed packets to actually reach the forward hook, a mechanism called "Reverse Path Filtering"
+in the router should be disabled. In case it is enabled, all packets that reach a router's interface with a source
+address that doesn't match the expected subnet mask from that interface will be dropped (regardless of the firewall).
+In case it is disabled, packets will pass through according to their destination IP but will be dropped if a "spoof"
+rule is added to the firewall I built.

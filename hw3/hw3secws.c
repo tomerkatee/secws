@@ -9,11 +9,8 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Tomer Katee");
 
-
-
 typedef __be32 ip_t;
 typedef __be16 port_t;
-
 
 #define CHRDEV_NAME "firewall"
 #define MAX_FORMAT_SIZE 40
@@ -113,7 +110,6 @@ static log_row_t* log_iter_next(log_iter* iter)
 	klist_iter_exit(&iter->nodes_iter);
 	return NULL;
 }
-
 
 static ip_t is_addr_in_subnet(ip_t addr, ip_t subnet_addr, ip_t subnet_mask)
 {	
@@ -292,7 +288,6 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 	struct iphdr* ip_header = ip_hdr(skb);
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
-	printk("hey\n");
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
