@@ -303,7 +303,7 @@ static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_ho
 		rule = custom_rules+i;
 		if (rule_match(rule, skb))
 		{
-			reason = i+1; // +1 becuase of the first loopback rule
+			reason = i; // +1 becuase of the first loopback rule
 			add_log(create_log(skb, rule->action, reason));
 			return rule->action;
 		}
@@ -542,14 +542,10 @@ char* copy_rule_to_buffer(char *buff, rule_t *rule)
 ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	char *curr = buf;
-	rule_t* rule;
 	int i;
-	for (i = -1; i <= num_custom_rules; i++)
-	{
-		rule = i == -1 ? &loopback_rule : (i == num_custom_rules ? &default_rule : custom_rules+i);
+	for (i = 0; i < num_custom_rules; i++)
+		curr = copy_rule_to_buffer(curr, custom_rules+i);
 
-		curr = copy_rule_to_buffer(curr, rule);
-	}
 	return curr - buf;
 }
 

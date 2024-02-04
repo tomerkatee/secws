@@ -1,6 +1,9 @@
-Here's a documentation of my code:
+The 'main' userspace program is called main.py and does not consist of any other userspace files.
+I made main.py executable (with a shebang) so you can run it with "./main.py".
+Also no changes were made to fw.h.
 
-fw.h: no changes were made to this file.
+
+Here are some explanations of my code:
 
 hw3secws.c: the module source. here are some keypoints:
 
