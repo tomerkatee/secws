@@ -4,6 +4,8 @@
 #include <linux/skbuff.h>
 #include <linux/time.h>
 #include <linux/string.h>
+#include <linux/hashtable.h>
+#include <net/tcp_states.h>
 
 
 MODULE_LICENSE("GPL");
@@ -18,6 +20,8 @@ typedef __be16 port_t;
 #define NUM_RULE_CATEGORIES 9
 #define IP_ANY 0
 #define LOG_ROW_BUFFER_SIZE 64
+#define MINOR_CONNS 2
+#define CONN_TABLE_CHUNCK_SIZE 8
 
 #define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
 
@@ -35,7 +39,21 @@ typedef struct {
 } log_iter;
 
 
-static struct nf_hook_ops nfho_fwd;
+typedef struct{
+	ip_t src_ip;
+	port_t src_port;
+	ip_t dst_ip;
+	port_t dst_port;
+} conn_t;
+
+
+typedef struct {
+	conn_t conn;	
+	int state;
+	struct hlist_node hnode;
+} conn_row_t;
+
+static struct nf_hook_ops nfho_prert;
 static struct klist log_klist;
 static log_node* tail = NULL;
 static rule_t custom_rules[MAX_RULES];
@@ -44,7 +62,11 @@ static int major_number;
 static struct class* sysfs_class = NULL;
 static struct device* rules_device = NULL;
 static struct device* log_device = NULL;
+static struct device* conns_device = NULL;
 static log_iter read_log_iter;
+
+DEFINE_HASHTABLE(conn_hashtable, CONN_TABLE_CHUNCK_SIZE);
+int conn_hashtable_size = CONN_TABLE_CHUNCK_SIZE;
 
 static rule_t loopback_rule = {
 	.rule_name = "loopback",
@@ -77,6 +99,7 @@ static rule_t default_rule = {
 	.ack = ACK_ANY,
 	.action = NF_DROP
 };
+
 
 
 // gets log_node reference from its klist_node
@@ -281,16 +304,81 @@ static void add_log(log_row_t log_row)
 	tail->data[tail->rows_count++] = log_row;
 }
 
-static int fwd_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
+static int conn_eq(conn_t *conn1, conn_t *conn2)
 {
-	int i;
-	rule_t* rule;
+	return conn1->src_ip == conn2->src_ip &&
+		   conn1->src_port == conn2->src_port &&
+		   conn1->dst_ip == conn2->dst_ip &&
+		   conn1->dst_port == conn2->dst_port;
+}
+
+static int hash(conn_t *conn)
+{
+	return conn->src_ip + conn->src_port + conn->dst_ip + conn->dst_port;
+}
+
+static conn_t* get_conn_row_of_skb(struct sk_buff *skb)
+{
+	conn_row_t* curr;
 	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+	conn_t skb_conn = {ip_header->saddr, tcp_header->source, ip_header->daddr, tcp_header->dest};
+	int key = hash(&skb_conn);
+	hash_for_each_possible(conn_hashtable, curr, hnode, key)
+	{
+		if(conn_eq(&curr->conn, &skb_conn))
+			return &curr->conn;
+	}
+}
+
+static int decide_by_state(conn_row_t* conn_row, struct sk_buff *skb)
+{
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+
+	switch (conn_row->state)
+	{
+		case TCP_ESTABLISHED:
+			if()
+				conn_row->state = TCP_CLOSE_WAIT;
+			else
+				
+			break;
+	}
+}
+
+static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
+{
+	int i, bucket;
+	rule_t* rule;
+	conn_row_t *conn_row;
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header;
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
+	int ack;
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
+
+	if(packet_prot == PROT_TCP)
+	{
+		tcp_header = tcp_hdr(skb);
+		if(tcp_header->ack)
+		{
+			conn_row = get_conn_row_of_skb(skb);
+			if(conn_row)
+			{
+				decide_by_state(conn_row, skb);
+			}
+
+		}
+		add_log(create_log(skb, NF_DROP, REASON_XMAS_PACKET));
+
+			return 
+		return tcp_header->fin && tcp_header->urg && tcp_header->psh;
+	}
+
 
 	if(is_xmas_packet(skb))
 	{
@@ -579,8 +667,14 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	return count;
 }
 
+ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
+{
+
+}
+
 static DEVICE_ATTR(rules, S_IWUSR | S_IRUGO, display_rules, modify_rules);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, modify_reset);
+static DEVICE_ATTR(conns, S_IRUSR, display_conns, NULL);
 
 static int register_sysfs_chrdev(void)
 {
@@ -606,11 +700,21 @@ static int register_sysfs_chrdev(void)
 
 	if (device_create_file(log_device, (const struct device_attribute *)&dev_attr_reset.attr))
 		goto reset_attr_create_failed;
+
+	conns_device = device_create(sysfs_class, NULL, MKDEV(major_number, MINOR_CONNS), NULL, CLASS_NAME "_" DEVICE_NAME_CONN_TAB);
+	if (IS_ERR(conns_device))
+		goto conns_device_create_failed;
+
+	if (device_create_file(conns_device, (const struct device_attribute *)&dev_attr_conns.attr))
+		goto conns_attr_create_failed;
 	
 
 	return 0;
 
 	// error handling
+conns_attr_create_failed:
+	device_destroy(sysfs_class, MKDEV(major_number, MINOR_CONNS));
+conns_device_create_failed:
 reset_attr_create_failed:
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_LOG));
 log_device_create_failed:
@@ -629,11 +733,11 @@ register_chrdev_failed:
 static int __init my_module_init_function(void) {
 	klist_init(&log_klist, NULL, NULL);
 
-	nfho_fwd.hook = (nf_hookfn*)fwd_hook_function;
-    nfho_fwd.hooknum = NF_INET_FORWARD;
-    nfho_fwd.pf = PF_INET;
-    nfho_fwd.priority = NF_IP_PRI_FIRST;
-    nf_register_net_hook(&init_net, &nfho_fwd);
+	nfho_prert.hook = (nf_hookfn*)prert_hook_function;
+    nfho_prert.hooknum = NF_INET_PRE_ROUTING;
+    nfho_prert.pf = PF_INET;
+    nfho_prert.priority = NF_IP_PRI_FIRST;
+    nf_register_net_hook(&init_net, &nfho_prert);
 
     if(register_sysfs_chrdev())
 	{
@@ -645,7 +749,7 @@ static int __init my_module_init_function(void) {
 }
 
 static void __exit my_module_exit_function(void) {
-    nf_unregister_net_hook(&init_net, &nfho_fwd);
+    nf_unregister_net_hook(&init_net, &nfho_prert);
 
 	device_remove_file(log_device, (const struct device_attribute *)&dev_attr_reset.attr);
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_LOG));
