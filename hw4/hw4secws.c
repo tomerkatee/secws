@@ -39,6 +39,14 @@ typedef struct {
 } log_iter;
 
 
+typedef enum {
+	SYN_SENT = 0,
+	SYN_ACK_SENT = 1,
+	WAIT_FOR_SYN_ACK = 2,
+	ESTABLISHED = 3
+} conn_state_t;
+
+
 typedef struct{
 	ip_t src_ip;
 	port_t src_port;
@@ -49,9 +57,14 @@ typedef struct{
 
 typedef struct {
 	conn_t conn;	
-	int state;
+	conn_state_t state;
 	struct hlist_node hnode;
 } conn_row_t;
+
+typedef struct {
+	conn_row_t conn_c2s;
+	conn_row_t conn_s2c;
+} two_sided_conn;
 
 static struct nf_hook_ops nfho_prert;
 static struct klist log_klist;
@@ -317,46 +330,95 @@ static int hash(conn_t *conn)
 	return conn->src_ip + conn->src_port + conn->dst_ip + conn->dst_port;
 }
 
-static conn_t* get_conn_row_of_skb(struct sk_buff *skb)
+static conn_row_t* search_conn_in_table(conn_t *conn)
 {
 	conn_row_t* curr;
-	struct iphdr* ip_header = ip_hdr(skb);
-	struct tcphdr* tcp_header = tcp_hdr(skb);
-	conn_t skb_conn = {ip_header->saddr, tcp_header->source, ip_header->daddr, tcp_header->dest};
-	int key = hash(&skb_conn);
-	hash_for_each_possible(conn_hashtable, curr, hnode, key)
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, hash(conn))
 	{
-		if(conn_eq(&curr->conn, &skb_conn))
-			return &curr->conn;
+		if(conn_eq(&curr->conn, conn))
+			return &curr;
 	}
+
+	return NULL;
 }
 
-static int decide_by_state(conn_row_t* conn_row, struct sk_buff *skb)
+// updating state of connection from the FIREWALL'S PERSPECTIVE
+static int update_state(conn_row_t* conn_row, struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 
 	switch (conn_row->state)
 	{
-		case TCP_ESTABLISHED:
-			if()
-				conn_row->state = TCP_CLOSE_WAIT;
+		case SYN_SENT:
+			if(tcp_header->syn && tcp_header->ack)
+				conn_row->state = WAIT_FOR_SYN_ACK;
 			else
-				
+				return -1;
 			break;
+
+		case TCP_SYN_RECV:
+			if(tcp_header->rst)
+				conn_row->state = TCP_CLOSE;
+			else if(tcp_header->ack)
+				conn_row->state = TCP_ESTABLISHED;
+			else
+				return -1;
+			break;
+
+		case TCP_ESTABLISHED:
+			if(tcp_header->fin || tcp_header->ack)
+				conn_row->state = TCP_SYN_RECV;
+			else
+				return -1;
+			break;
+
+		case WAIT_FOR_SYN_ACK:
+			if(tcp_header->syn && tcp_header->ack)
+				conn_row->state = TCP_SYN_RECV;
+			else
+				return -1;
+			break;	
 	}
+	return 0;
+}
+
+static conn_row_t* add_conn_row(struct sk_buff *skb, int initialState)
+{
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+	conn_row_t* conn_row = kmalloc(sizeof(conn_row_t), GFP_KERNEL);
+
+	if(!conn_row){
+		printk(KERN_ERR "Failed to allocate memory\n");
+		return NULL;
+	}
+
+	conn_row->conn.src_ip = ip_header->saddr;
+	conn_row->conn.src_port = tcp_header->source;
+	conn_row->conn.dst_ip = ip_header->daddr;
+	conn_row->conn.dst_port = tcp_header->dest;
+
+	conn_row->state = initialState;
+
+	hash_add(conn_hashtable, &conn_row->hnode, hash(&conn_row->conn));
+
+	return conn_row;
 }
 
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	int i, bucket;
 	rule_t* rule;
-	conn_row_t *conn_row;
+	conn_row_t *conn_row, *conn_inv_row;
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
 	int ack;
+	conn_t skb_conn, skb_conn_inv;
+	u_int8_t action = -1;
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -366,24 +428,41 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 		tcp_header = tcp_hdr(skb);
 		if(tcp_header->ack)
 		{
-			conn_row = get_conn_row_of_skb(skb);
-			if(conn_row)
+			skb_conn.src_ip = ip_header->saddr;
+			skb_conn.src_port = tcp_header->source;
+			skb_conn.dst_ip = ip_header->daddr;
+			skb_conn.dst_port = tcp_header->dest;
+			
+			// inverted
+			skb_conn_inv.src_ip = ip_header->daddr;
+			skb_conn_inv.src_port = tcp_header->dest;
+			skb_conn_inv.dst_ip = ip_header->saddr;
+			skb_conn_inv.dst_port = tcp_header->source;
+
+			if((conn_row = search_conn_in_table(&skb_conn)))
 			{
-				decide_by_state(conn_row, skb);
+				update_state(conn_row, skb);
 			}
-
+			else if((conn_inv_row = search_conn_in_table(&skb_conn_inv)))
+			{
+				if(!tcp_header->syn)
+				{
+					action = NF_DROP;
+					reason = REASON_ILLEGAL_VALUE;
+					goto post_decision;
+				}
+				add_conn_row(skb, SYN_ACK_SENT);
+				update_state(conn_inv_row, skb);
+			}
 		}
-		add_log(create_log(skb, NF_DROP, REASON_XMAS_PACKET));
-
-			return 
-		return tcp_header->fin && tcp_header->urg && tcp_header->psh;
 	}
 
 
 	if(is_xmas_packet(skb))
 	{
-		add_log(create_log(skb, NF_DROP, REASON_XMAS_PACKET));
-		return NF_DROP;
+		action = NF_DROP;
+		reason = REASON_XMAS_PACKET;
+		goto post_decision;
 	}
 
 	for (i = 0; i < num_custom_rules; i++)
@@ -391,13 +470,37 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 		rule = custom_rules+i;
 		if (rule_match(rule, skb))
 		{
+			action = rule->action;
 			reason = i; // +1 becuase of the first loopback rule
-			add_log(create_log(skb, rule->action, reason));
-			return rule->action;
+			break;
 		}
 	}
-	add_log(create_log(skb, default_rule.action, REASON_NO_MATCHING_RULE));
-	return default_rule.action;
+	if(action == -1)
+	{
+		action = default_rule.action;
+		reason = REASON_NO_MATCHING_RULE;
+		goto post_decision;
+	}
+	if(packet_prot == PROT_TCP && action == NF_ACCEPT)
+	{
+		tcp_header = tcp_hdr(skb);
+		if(tcp_header->syn)
+		{
+			add_conn_row(skb, SYN_SENT); // client SYN send case
+		}
+		else
+		{
+			action = NF_DROP;
+			reason = REASON_ILLEGAL_VALUE;
+			goto post_decision;
+		}
+	}
+
+
+
+post_decision:
+	add_log(create_log(skb, action, reason));
+	return action;
 }
 
 
