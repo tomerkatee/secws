@@ -25,6 +25,11 @@ typedef __be16 port_t;
 
 #define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
 
+#define COPY_AND_ADVANCE(buf, st_p, field_id) do {\ 
+						memcpy((buf), (st_p)->field_id, sizeof((st_p)->field_id));\
+						(buf) += sizeof((st_p)->field_id);\
+						} while(0)
+
 
 typedef struct {
 	int rows_count;
@@ -43,14 +48,18 @@ typedef enum {
 	SYN_SENT = 0,
 	SYN_ACK_SENT = 1,
 	WAIT_FOR_SYN_ACK = 2,
-	ESTABLISHED = 3
+	WAIT_FOR_ACK = 3,
+	ESTABLISHED = 4,
+	FIN_WAIT_1 = 5,
+	WAIT_FOR_CLOSE_WAIT = 6
+
 } conn_state_t;
 
 
 typedef struct{
 	ip_t src_ip;
-	port_t src_port;
 	ip_t dst_ip;
+	port_t src_port;
 	port_t dst_port;
 } conn_t;
 
@@ -320,14 +329,14 @@ static void add_log(log_row_t log_row)
 static int conn_eq(conn_t *conn1, conn_t *conn2)
 {
 	return conn1->src_ip == conn2->src_ip &&
-		   conn1->src_port == conn2->src_port &&
 		   conn1->dst_ip == conn2->dst_ip &&
+		   conn1->src_port == conn2->src_port &&
 		   conn1->dst_port == conn2->dst_port;
 }
 
 static int hash(conn_t *conn)
 {
-	return conn->src_ip + conn->src_port + conn->dst_ip + conn->dst_port;
+	return conn->src_ip + conn->dst_ip + conn->src_port + conn->dst_port;
 }
 
 static conn_row_t* search_conn_in_table(conn_t *conn)
@@ -343,40 +352,68 @@ static conn_row_t* search_conn_in_table(conn_t *conn)
 	return NULL;
 }
 
-// updating state of connection from the FIREWALL'S PERSPECTIVE
-static int update_state(conn_row_t* conn_row, struct sk_buff *skb)
+// updating state of server connection from the FIREWALL'S PERSPECTIVE
+static int update_state_server(conn_row_t* conn_row, struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 
+	int recv = ip_header->daddr == conn_row->conn.src_ip;
+
+	switch (conn_row->state)
+	{
+		case SYN_ACK_SENT:
+			if(recv && tcp_header->ack)
+				conn_row->state = WAIT_FOR_ACK;
+			else
+				return -1;
+			break;
+
+		case WAIT_FOR_ACK:
+			if(!recv && tcp_header->ack)
+				conn_row->state = ESTABLISHED;
+			else
+				return -1;
+			break;
+
+		case ESTABLISHED:
+			if(recv && tcp_header->fin)
+				conn_row->state = WAIT_FOR_CLOSE_WAIT;
+			else
+				return -1;
+			break;	
+	}
+	return 0;
+}
+
+
+// updating state of client connection from the FIREWALL'S PERSPECTIVE
+static int update_state_client(conn_row_t* conn_row, struct sk_buff *skb)
+{
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+
+	int recv = ip_header->daddr == conn_row->conn.src_ip;
+
 	switch (conn_row->state)
 	{
 		case SYN_SENT:
-			if(tcp_header->syn && tcp_header->ack)
+			if(recv && tcp_header->syn && tcp_header->ack)
 				conn_row->state = WAIT_FOR_SYN_ACK;
 			else
 				return -1;
 			break;
 
-		case TCP_SYN_RECV:
-			if(tcp_header->rst)
-				conn_row->state = TCP_CLOSE;
-			else if(tcp_header->ack)
-				conn_row->state = TCP_ESTABLISHED;
-			else
-				return -1;
-			break;
-
-		case TCP_ESTABLISHED:
-			if(tcp_header->fin || tcp_header->ack)
-				conn_row->state = TCP_SYN_RECV;
-			else
-				return -1;
-			break;
-
 		case WAIT_FOR_SYN_ACK:
-			if(tcp_header->syn && tcp_header->ack)
-				conn_row->state = TCP_SYN_RECV;
+			if(!recv && tcp_header->ack)
+				conn_row->state = ESTABLISHED;
+			else
+				return -1;
+			break;
+
+		case ESTABLISHED:
+			if(!recv && tcp_header->fin)
+				conn_row->state = FIN_WAIT_1;
 			else
 				return -1;
 			break;	
@@ -441,7 +478,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 
 			if((conn_row = search_conn_in_table(&skb_conn)))
 			{
-				update_state(conn_row, skb);
+				update_state_server(conn_row, skb);
 			}
 			else if((conn_inv_row = search_conn_in_table(&skb_conn_inv)))
 			{
@@ -452,7 +489,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 					goto post_decision;
 				}
 				add_conn_row(skb, SYN_ACK_SENT);
-				update_state(conn_inv_row, skb);
+				update_state_client(conn_inv_row, skb);
 			}
 		}
 	}
@@ -770,10 +807,32 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	return count;
 }
 
+char* copy_conn_row_to_buffer(char *buff, conn_row_t *conn_row)
+{
+	char *curr = buff;
+
+	COPY_AND_ADVANCE(curr, conn_row, conn.src_ip);
+	COPY_AND_ADVANCE(curr, conn_row, conn.dst_ip);
+	COPY_AND_ADVANCE(curr, conn_row, conn.src_port);
+	COPY_AND_ADVANCE(curr, conn_row, conn.dst_port);
+	COPY_AND_ADVANCE(curr, conn_row, state);
+
+	return curr;
+}
+
 ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
+	char *curr = buf;
+	conn_row_t *conn_row;
+	int bucket;
+	hash_for_each(conn_hashtable, bucket, conn_row, hnode)
+	{
+		curr = copy_conn_row_to_buffer(curr, conn_row);
+	}
 
+	return curr - buf;
 }
+
 
 static DEVICE_ATTR(rules, S_IWUSR | S_IRUGO, display_rules, modify_rules);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, modify_reset);

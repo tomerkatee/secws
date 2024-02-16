@@ -28,14 +28,17 @@ class TwoDirectionalDict:
 path_to_rules_attr = "/sys/class/fw/rules/rules"
 path_to_reset_attr = "/sys/class/fw/fw_log/reset"
 path_to_log = "/dev/fw_log"
+path_to_conns_attr = "/sys/class/fw/conns/conns"
 rule_format = "<20s I I B I B H H B I B"
 log_format = "<L B B I I H H i I"
+conn_format = "<I I H H I"
 port_dict = TwoDirectionalDict({">1023": 1023, "any": 0})
 protocol_dict = TwoDirectionalDict({"ICMP": 1, "TCP": 6, "UDP": 17, "other": 255, "any": 143})
 direction_dict = TwoDirectionalDict({"in": 1, "out": 2, "any": 3})
 ack_dict = TwoDirectionalDict({"no": 1, "yes": 2, "any": 3})
 action_dict = TwoDirectionalDict({"accept": 1, "drop": 0})
 reason_dict = TwoDirectionalDict({"REASON_FW_INACTIVE" : -1, "REASON_NO_MATCHING_RULE": -2, "REASON_XMAS_PACKET": -4, "REASON_ILLEGAL_VALUE": -6})
+state_dict = TwoDirectionalDict({"SYN_SENT" : 0, "SYN_ACK_SENT": 1, "WAIT_FOR_SYN_ACK": 2, "WAIT_FOR_ACK": 3, "ESTABLISHED": 4})
 
 class Rule:
     def __init__(self, name=None, direction=None, src_ip=None, src_prefix_size=None,
@@ -78,6 +81,16 @@ class LogRow:
     @staticmethod 
     def timestamp_seconds_to_format(ts_epoch):
         return datetime.datetime.fromtimestamp(ts_epoch).strftime('%d/%m/%Y %H:%M:%S')
+
+
+class ConnRow:
+    def __init__(self, src_ip=None, dst_ip=None,
+                 src_port=None, dst_port=None, state=None):
+        self.src_ip = src_ip
+        self.dst_ip = dst_ip
+        self.src_port = src_port
+        self.dst_port = dst_port
+        self.state = state
 
 
 def try_convert_to_ip_and_prefix(s):
@@ -328,6 +341,56 @@ def show_log():
 def clear_log():
     with open(path_to_reset_attr, 'w') as reset_attr:
         reset_attr.write("0")
+
+
+
+def conn_row_from_bytes(bin: bytes):
+    try:
+        conn_data = struct.unpack(conn_format, bin)
+        conn_row = ConnRow()
+        conn_row.src_ip = conn_data[0]
+        conn_row.dst_ip = conn_data[1]
+        conn_row.src_port = conn_data[2]
+        conn_row.dst_port = conn_data[3]
+        conn_row.state = conn_data[4]
+        return conn_row
+    except:
+        return -1
+
+
+# here we can assume conn_row is ok since it has come from kernel module
+def line_from_conn_row(conn_row: ConnRow):
+    src_ip = Rule.int_to_ip_str(conn_row.src_ip)
+    dst_ip = Rule.int_to_ip_str(conn_row.dst_ip)
+    src_port = conn_row.src_port
+    dst_port = conn_row.dst_port
+    state = state_dict.get_key(conn_row.state)
+    return '\t\t'.join(map(str,[src_ip, dst_ip, src_port, dst_port, state]))
+
+
+def show_conns():
+    conn_rows = []
+    try:
+        with open(path_to_conns_attr, 'rb') as conns_file:
+            while True:
+                conns_data = conns_file.read(struct.calcsize(conn_format))
+                if not conns_data:
+                    break
+
+                conn_row = conn_row_from_bytes(conns_data)
+                if(conn_row == -1):
+                    print("Error converting bytes to connection row")
+                    return -1
+                
+                conn_rows.append(conn_row)
+
+        print('\t\t\t'.join(["src_ip", "dst_ip", "src_port", "dst_port", "state"]))
+        print('\n'.join([line_from_conn_row(r) for r in conn_rows]))
+
+    except IOError as e:
+        print("Error opening conns file: "+str(e))
+        return -1
+
     
 def main():
     if len(sys.argv) < 2:
@@ -348,6 +411,8 @@ def main():
         show_log()
     elif sys.argv[1] == "clear_log":
         clear_log()
+    elif sys.argv[1] == "show_conns":
+        show_conns()
     else:
         print("error: bad arguments")
 
