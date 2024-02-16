@@ -63,6 +63,7 @@ class Rule:
     @staticmethod
     def ip_str_to_int(ip_str):
         return int.from_bytes(ipaddress.IPv4Address(ip_str).packed, byteorder='little')
+    
 
 
 class LogRow:
@@ -107,12 +108,21 @@ def try_convert_to_ip_and_prefix(s):
         except:
             return -1
 
+
+def convert_to_little_end_port(p):
+    big_endian_bytes = p.to_bytes(2, byteorder='big')
+    return int.from_bytes(big_endian_bytes, byteorder='little')
+
+def convert_to_big_end_port(p):
+    little_endian_bytes = p.to_bytes(2, byteorder='little')
+    return int.from_bytes(little_endian_bytes, byteorder='big')
+
 def try_convert_to_port(s):
     res = port_dict.get_value(s)
     if res != -1:
-        return res
+        return convert_to_big_end_port(res)
     if s.isdigit() and 0 < int(s) < 1023:
-        return int(s)
+        return convert_to_big_end_port(int(s))
     return -1
 
 # here we can assume rule is ok since it has come from kernel module
@@ -124,8 +134,8 @@ def line_from_rule(rule: Rule):
     dst_ip_prefix = get_ip_prefix(rule.dst_ip, rule.dst_prefix_size)
     protocol = protocol_dict.get_key(rule.protocol)
     get_port = lambda port: port if 0<port<1023 else port_dict.get_key(port)
-    src_port = get_port(rule.src_port)
-    dst_port = get_port(rule.dst_port)
+    src_port = get_port(convert_to_little_end_port(rule.src_port))
+    dst_port = get_port(convert_to_little_end_port(rule.dst_port))
     ack = ack_dict.get_key(rule.ack)
     action = action_dict.get_key(rule.action)
     return ' '.join(map(str,[name, direction, src_ip_prefix, dst_ip_prefix, protocol, src_port, dst_port, ack, action]))
@@ -302,8 +312,8 @@ def line_from_log_row(log_row: LogRow):
     timestamp = LogRow.timestamp_seconds_to_format(log_row.timestamp)
     src_ip = Rule.int_to_ip_str(log_row.src_ip)
     dst_ip = Rule.int_to_ip_str(log_row.dst_ip)
-    src_port = log_row.src_port
-    dst_port = log_row.dst_port
+    src_port = convert_to_little_end_port(log_row.src_port)
+    dst_port = convert_to_little_end_port(log_row.dst_port)
     protocol = protocol_dict.get_key(log_row.protocol)
     action = action_dict.get_key(log_row.action)
     reason = reason_dict.get_key(log_row.reason)
@@ -362,8 +372,8 @@ def conn_row_from_bytes(bin: bytes):
 def line_from_conn_row(conn_row: ConnRow):
     src_ip = Rule.int_to_ip_str(conn_row.src_ip)
     dst_ip = Rule.int_to_ip_str(conn_row.dst_ip)
-    src_port = conn_row.src_port
-    dst_port = conn_row.dst_port
+    src_port = convert_to_little_end_port(conn_row.src_port)
+    dst_port = convert_to_little_end_port(conn_row.dst_port)
     state = state_dict.get_key(conn_row.state)
     return '\t\t'.join(map(str,[src_ip, dst_ip, src_port, dst_port, state]))
 

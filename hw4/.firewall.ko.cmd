@@ -1,0 +1,1 @@
+cmd_/home/fw/sf/homework/hw4/firewall.ko := ld -r -m elf_i386 -T ./scripts/module-common.lds --build-id  -o /home/fw/sf/homework/hw4/firewall.ko /home/fw/sf/homework/hw4/firewall.o /home/fw/sf/homework/hw4/firewall.mod.o ;  true

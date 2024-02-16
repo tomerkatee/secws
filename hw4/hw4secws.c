@@ -23,10 +23,12 @@ typedef __be16 port_t;
 #define MINOR_CONNS 2
 #define CONN_TABLE_CHUNCK_SIZE 8
 
+#define DEVICE_NAME_CONNS "conns"
+
 #define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
 
-#define COPY_AND_ADVANCE(buf, st_p, field_id) do {\ 
-						memcpy((buf), (st_p)->field_id, sizeof((st_p)->field_id));\
+#define COPY_AND_ADVANCE(buf, st_p, field_id) do {\
+						memcpy((buf), &(st_p)->field_id, sizeof((st_p)->field_id));\
 						(buf) += sizeof((st_p)->field_id);\
 						} while(0)
 
@@ -163,7 +165,7 @@ static ip_t is_addr_in_subnet(ip_t addr, ip_t subnet_addr, ip_t subnet_mask)
 
 static int is_port_in_range(port_t port, port_t range)
 {
-	return range==PORT_ANY ? 1 : (range == PORT_ABOVE_1023 ? port > 1023 : port==range) ;	
+	return ntohs(range)==PORT_ANY ? 1 : (ntohs(range) == PORT_ABOVE_1023 ? ntohs(port) > 1023 : port==range);	
 }
 
 static int is_protocol_in_range(u_int8_t prot, prot_t range)
@@ -203,9 +205,10 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	{
 		tcp_header = tcp_hdr(skb);
 
-		if(!is_port_in_range(ntohs(tcp_header->source), rule->src_port))
+		if(!is_port_in_range(tcp_header->source, rule->src_port))
 			return 0;
-		if(!is_port_in_range(ntohs(tcp_header->dest), rule->dst_port))
+		
+		if(!is_port_in_range(tcp_header->dest, rule->dst_port))
 			return 0;
 
 		if(!is_ack_in_range(tcp_header->ack, rule->ack))
@@ -214,10 +217,10 @@ static int rule_match(rule_t *rule, struct sk_buff *skb)
 	else if(packet_prot == PROT_UDP)
 	{
 		udp_header = udp_hdr(skb);
-		if(!is_port_in_range(ntohs(udp_header->source), rule->src_port))
+		if(!is_port_in_range(udp_header->source, rule->src_port))
 			return 0;
 	
-		if(!is_port_in_range(ntohs(udp_header->dest), rule->dst_port))
+		if(!is_port_in_range(udp_header->dest, rule->dst_port))
 			return 0;
 	}
 
@@ -256,14 +259,14 @@ static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 	if(ip_header->protocol == PROT_TCP)
 	{
 		tcp_header = tcp_hdr(skb);
-		log_row.src_port = ntohs(tcp_header->source);
-		log_row.dst_port = ntohs(tcp_header->dest);
+		log_row.src_port = tcp_header->source;
+		log_row.dst_port = tcp_header->dest;
 	}
 	else if(ip_header->protocol == PROT_UDP)
 	{
 		udp_header = udp_hdr(skb);
-		log_row.src_port = ntohs(udp_header->source);
-		log_row.dst_port = ntohs(udp_header->dest);
+		log_row.src_port = udp_header->source;
+		log_row.dst_port = udp_header->dest;
 	}
 	else 
 	{
@@ -346,7 +349,7 @@ static conn_row_t* search_conn_in_table(conn_t *conn)
 	hash_for_each_possible(conn_hashtable, curr, hnode, hash(conn))
 	{
 		if(conn_eq(&curr->conn, conn))
-			return &curr;
+			return curr;
 	}
 
 	return NULL;
@@ -382,6 +385,9 @@ static int update_state_server(conn_row_t* conn_row, struct sk_buff *skb)
 			else
 				return -1;
 			break;	
+		
+		default:
+			break;
 	}
 	return 0;
 }
@@ -446,16 +452,15 @@ static conn_row_t* add_conn_row(struct sk_buff *skb, int initialState)
 
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
-	int i, bucket;
+	int i;
 	rule_t* rule;
 	conn_row_t *conn_row, *conn_inv_row;
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
-	int ack;
 	conn_t skb_conn, skb_conn_inv;
-	u_int8_t action = -1;
+	u_int8_t action = 99;
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -465,6 +470,8 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 		tcp_header = tcp_hdr(skb);
 		if(tcp_header->ack)
 		{
+			printk(KERN_DEBUG "0\n");
+
 			skb_conn.src_ip = ip_header->saddr;
 			skb_conn.src_port = tcp_header->source;
 			skb_conn.dst_ip = ip_header->daddr;
@@ -482,12 +489,17 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 			}
 			else if((conn_inv_row = search_conn_in_table(&skb_conn_inv)))
 			{
+				printk(KERN_DEBUG "1\n");
+
 				if(!tcp_header->syn)
 				{
+					printk(KERN_DEBUG "2\n");
 					action = NF_DROP;
 					reason = REASON_ILLEGAL_VALUE;
 					goto post_decision;
 				}
+				printk(KERN_DEBUG "3\n");
+
 				add_conn_row(skb, SYN_ACK_SENT);
 				update_state_client(conn_inv_row, skb);
 			}
@@ -508,11 +520,11 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 		if (rule_match(rule, skb))
 		{
 			action = rule->action;
-			reason = i; // +1 becuase of the first loopback rule
+			reason = i;
 			break;
 		}
 	}
-	if(action == -1)
+	if(action == 99)
 	{
 		action = default_rule.action;
 		reason = REASON_NO_MATCHING_RULE;
@@ -520,13 +532,19 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	}
 	if(packet_prot == PROT_TCP && action == NF_ACCEPT)
 	{
+		printk(KERN_DEBUG "4\n");
+
 		tcp_header = tcp_hdr(skb);
 		if(tcp_header->syn)
 		{
+			printk(KERN_DEBUG "5\n");
+
 			add_conn_row(skb, SYN_SENT); // client SYN send case
 		}
 		else
 		{
+			printk(KERN_DEBUG "6\n");
+
 			action = NF_DROP;
 			reason = REASON_ILLEGAL_VALUE;
 			goto post_decision;
@@ -687,8 +705,8 @@ const char* set_rule_from_buffer(const char* buff, rule_t *rule)
 
 	if (!(rule->src_prefix_size <= 32
 		&& rule->dst_prefix_size <= 32
-		&& rule->src_port <= PORT_ABOVE_1023
-		&& rule->dst_port <= PORT_ABOVE_1023
+		&& rule->src_port <= htons(PORT_ABOVE_1023)
+		&& rule->dst_port <= htons(PORT_ABOVE_1023)
 		&& is_prot_t(rule->protocol)
 		&& is_ack_t(rule->ack)
 		&& is_action(rule->action)
@@ -863,7 +881,7 @@ static int register_sysfs_chrdev(void)
 	if (device_create_file(log_device, (const struct device_attribute *)&dev_attr_reset.attr))
 		goto reset_attr_create_failed;
 
-	conns_device = device_create(sysfs_class, NULL, MKDEV(major_number, MINOR_CONNS), NULL, CLASS_NAME "_" DEVICE_NAME_CONN_TAB);
+	conns_device = device_create(sysfs_class, NULL, MKDEV(major_number, MINOR_CONNS), NULL, DEVICE_NAME_CONNS);
 	if (IS_ERR(conns_device))
 		goto conns_device_create_failed;
 
@@ -912,6 +930,9 @@ static int __init my_module_init_function(void) {
 
 static void __exit my_module_exit_function(void) {
     nf_unregister_net_hook(&init_net, &nfho_prert);
+
+	device_remove_file(conns_device, (const struct device_attribute *)&dev_attr_conns.attr);
+	device_destroy(sysfs_class, MKDEV(major_number, MINOR_CONNS));
 
 	device_remove_file(log_device, (const struct device_attribute *)&dev_attr_reset.attr);
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_LOG));
