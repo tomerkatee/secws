@@ -47,7 +47,7 @@ typedef struct {
 	int i;
 } log_iter;
 
-
+/*
 typedef enum {
 	SYN_SENT = 0,
 	SYN_ACK_SENT = 1,
@@ -58,6 +58,7 @@ typedef enum {
 	WAIT_FOR_CLOSE_WAIT = 6
 
 } conn_state_t;
+*/
 
 
 typedef struct{
@@ -70,7 +71,7 @@ typedef struct{
 
 typedef struct {
 	conn_t conn;	
-	conn_state_t state;
+	int state;
 	struct hlist_node hnode;
 } conn_row_t;
 
@@ -357,78 +358,6 @@ static conn_row_t* search_conn_in_table(conn_t *conn)
 	return NULL;
 }
 
-// updating state of server connection from the FIREWALL'S PERSPECTIVE
-static int update_state_server(conn_row_t* conn_row, struct sk_buff *skb)
-{
-	struct iphdr* ip_header = ip_hdr(skb);
-	struct tcphdr* tcp_header = tcp_hdr(skb);
-
-	int recv = ip_header->daddr == conn_row->conn.src_ip;
-
-	switch (conn_row->state)
-	{
-		case SYN_ACK_SENT:
-			if(recv && tcp_header->ack)
-				conn_row->state = WAIT_FOR_ACK;
-			else
-				return -1;
-			break;
-
-		case WAIT_FOR_ACK:
-			if(!recv && tcp_header->ack)
-				conn_row->state = ESTABLISHED;
-			else
-				return -1;
-			break;
-
-		case ESTABLISHED:
-			if(recv && tcp_header->fin)
-				conn_row->state = WAIT_FOR_CLOSE_WAIT;
-			else
-				return -1;
-			break;	
-		
-		default:
-			break;
-	}
-	return 0;
-}
-
-
-// updating state of client connection from the FIREWALL'S PERSPECTIVE
-static int update_state_client(conn_row_t* conn_row, struct sk_buff *skb)
-{
-	struct iphdr* ip_header = ip_hdr(skb);
-	struct tcphdr* tcp_header = tcp_hdr(skb);
-
-	int recv = ip_header->daddr == conn_row->conn.src_ip;
-
-	switch (conn_row->state)
-	{
-		case SYN_SENT:
-			if(recv && tcp_header->syn && tcp_header->ack)
-				conn_row->state = WAIT_FOR_SYN_ACK;
-			else
-				return -1;
-			break;
-
-		case WAIT_FOR_SYN_ACK:
-			if(!recv && tcp_header->ack)
-				conn_row->state = ESTABLISHED;
-			else
-				return -1;
-			break;
-
-		case ESTABLISHED:
-			if(!recv && tcp_header->fin)
-				conn_row->state = FIN_WAIT_1;
-			else
-				return -1;
-			break;	
-	}
-	return 0;
-}
-
 
 
 static conn_row_t* add_conn_row(conn_t *conn, int initialState)
@@ -451,34 +380,43 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_t* conn_row)
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 
-	int recv = ip_header->daddr == conn_row->conn.src_ip;
-	int send = !recv;
+	if(ip_header->daddr == conn_row->conn.src_ip)
+		return NF_ACCEPT;
 
-	
 	switch (conn_row->state)
 	{
 		case TCP_CLOSE:
-			if(recv && tcp_header->syn && tcp_header->ack)
+			if(tcp_header->syn && !tcp_header->ack)
+				conn_row->state = TCP_SYN_SENT;
+
+			else if(tcp_header->syn && tcp_header->ack)
+				conn_row->state = TCP_SYN_RECV;
+			
+			else
+				return NF_DROP;
+			
+			break;
+
+		case TCP_SYN_SENT:
+			if(tcp_header->ack)
+				conn_row->state = TCP_ESTABLISHED;
+			else if(tcp_header->syn && !tcp_header->ack) // syn retransmission
 				conn_row->state = TCP_SYN_SENT;
 			else
-				return -1;
+				return NF_DROP;
+
 			break;
 
-		case WAIT_FOR_SYN_ACK:
-			if(!recv && tcp_header->ack)
-				conn_row->state = ESTABLISHED;
+		case TCP_SYN_RECV:
+			if(tcp_header->ack)
+				conn_row->state = tcp_header->syn ? TCP_SYN_RECV : TCP_ESTABLISHED;
 			else
-				return -1;
-			break;
+				return NF_DROP;
 
-		case ESTABLISHED:
-			if(!recv && tcp_header->fin)
-				conn_row->state = FIN_WAIT_1;
-			else
-				return -1;
+		case TCP_ESTABLISHED:
 			break;	
 	}
-	return 0;
+	return NF_ACCEPT;
 
 }
 
