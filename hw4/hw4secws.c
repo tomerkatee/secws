@@ -47,19 +47,6 @@ typedef struct {
 	int i;
 } log_iter;
 
-/*
-typedef enum {
-	SYN_SENT = 0,
-	SYN_ACK_SENT = 1,
-	WAIT_FOR_SYN_ACK = 2,
-	WAIT_FOR_ACK = 3,
-	ESTABLISHED = 4,
-	FIN_WAIT_1 = 5,
-	WAIT_FOR_CLOSE_WAIT = 6
-
-} conn_state_t;
-*/
-
 
 typedef struct{
 	ip_t src_ip;
@@ -94,6 +81,7 @@ static log_iter read_log_iter;
 
 DEFINE_HASHTABLE(conn_hashtable, CONN_TABLE_CHUNCK_SIZE);
 int conn_hashtable_size = CONN_TABLE_CHUNCK_SIZE;
+int conn_rows_num = 0;
 
 static rule_t loopback_rule = {
 	.rule_name = "loopback",
@@ -358,7 +346,10 @@ static conn_row_t* search_conn_in_table(conn_t *conn)
 	return NULL;
 }
 
-
+static void double_conn_hashtable(void)
+{
+	hash_for_each(conn_tab)
+}
 
 static conn_row_t* add_conn_row(conn_t *conn, int initialState)
 {
@@ -371,8 +362,14 @@ static conn_row_t* add_conn_row(conn_t *conn, int initialState)
 	conn_row->conn = *conn;
 	conn_row->state = initialState;
 	hash_add(conn_hashtable, &conn_row->hnode, hash(&conn_row->conn));
+	conn_rows_num++;
+	if(conn_rows_num > 0.75*conn_hashtable_size)
+
 	return conn_row;
 }
+
+
+//TODO: think about acks are they mandatory to write here?
 
 // decides what to do with the packet by the connection row in the table, and also updates if needed
 static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_t* conn_row)
@@ -414,6 +411,10 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_t* conn_row)
 				return NF_DROP;
 
 		case TCP_ESTABLISHED:
+			if(tcp_header->ack)
+				conn_row->state = tcp_header->fin ? TCP_CLOSE : TCP_ESTABLISHED;
+			else
+				return NF_DROP;
 			break;	
 	}
 	return NF_ACCEPT;
@@ -433,7 +434,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	if(tcp_header->ack)
 	{
 		if(conn_row || conn_inv_row)
-			return handle_by_state_machine(skb, conn_row, conn_inv_row);
+			return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
 		else 
 			return NF_DROP;
 	}
@@ -457,7 +458,6 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	int i;
 	rule_t* rule;
 	struct iphdr* ip_header = ip_hdr(skb);
-	struct tcphdr* tcp_header;
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
 	u_int8_t action = NO_DECISION;
@@ -750,17 +750,24 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 	return curr - buf;
 }
 
-// deletes all nodes from klist and refreshes it, frees all kmalloc-ed memory
 ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
+	free__log_klist();
+	klist_init(&log_klist, NULL, NULL);
+	tail = NULL;
+	return count;
+}
 
+// deletes all nodes from klist and frees all kmalloc-ed memory
+void free_log_klist()
+{
 	struct klist_iter iter;
 	log_node *curr_log_node;
 	struct klist_node *prev;
 	struct klist_node *curr;
 
 	if(!tail)
-		return count;
+		return;
 
 	klist_iter_init_node(&log_klist, &iter, &tail->node);
 
@@ -775,9 +782,20 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	} while(prev);
 
 	klist_iter_exit(&iter);
-	klist_init(&log_klist, NULL, NULL);
-	tail = NULL;
-	return count;
+
+}
+
+// deletes all entries from hashtable and frees all kmalloc-ed memory
+void free_conn_hashtable()
+{
+    conn_row_t *conn_row, *tmp;
+    unsigned int bucket;
+
+    // Free memory for elements in the old hashtable
+    hash_for_each_safe(conn_hashtable, bucket, conn_row, tmp, hnode) {
+        hash_del(&conn_row->hnode);
+        kfree(conn_row);
+    }
 }
 
 char* copy_conn_row_to_buffer(char *buff, conn_row_t *conn_row)
@@ -867,6 +885,7 @@ register_chrdev_failed:
 
 static int __init my_module_init_function(void) {
 	klist_init(&log_klist, NULL, NULL);
+	hash_init(conn_hashtable);
 
 	nfho_prert.hook = (nf_hookfn*)prert_hook_function;
     nfho_prert.hooknum = NF_INET_PRE_ROUTING;
@@ -884,6 +903,9 @@ static int __init my_module_init_function(void) {
 }
 
 static void __exit my_module_exit_function(void) {
+	free_log_klist();
+	free_conn_hashtable();
+
     nf_unregister_net_hook(&init_net, &nfho_prert);
 
 	device_remove_file(conns_device, (const struct device_attribute *)&dev_attr_conns.attr);

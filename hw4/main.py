@@ -37,8 +37,20 @@ protocol_dict = TwoDirectionalDict({"ICMP": 1, "TCP": 6, "UDP": 17, "other": 255
 direction_dict = TwoDirectionalDict({"in": 1, "out": 2, "any": 3})
 ack_dict = TwoDirectionalDict({"no": 1, "yes": 2, "any": 3})
 action_dict = TwoDirectionalDict({"accept": 1, "drop": 0})
-reason_dict = TwoDirectionalDict({"REASON_FW_INACTIVE" : -1, "REASON_NO_MATCHING_RULE": -2, "REASON_XMAS_PACKET": -4, "REASON_ILLEGAL_VALUE": -6})
-state_dict = TwoDirectionalDict({"SYN_SENT" : 0, "SYN_ACK_SENT": 1, "WAIT_FOR_SYN_ACK": 2, "WAIT_FOR_ACK": 3, "ESTABLISHED": 4})
+reason_dict = TwoDirectionalDict({"REASON_FW_INACTIVE" : -1, "REASON_NO_MATCHING_RULE": -2, "REASON_XMAS_PACKET": -4, "REASON_ILLEGAL_VALUE": -6, "REASON_EXISTING_TCP_CONNECTION": -7})
+state_dict = TwoDirectionalDict({
+    "TCP_ESTABLISHED" : 1,
+    "TCP_SYN_SENT": 2,
+    "TCP_SYN_RECV": 3,
+    "TCP_FIN_WAIT1": 4,
+    "TCP_FIN_WAIT2": 5,
+    "TCP_TIME_WAIT": 6,
+    "TCP_CLOSE": 7,
+    "TCP_CLOSE_WAIT": 8,
+    "TCP_LAST_ACK": 9,
+    "TCP_LISTEN": 10,
+    "TCP_CLOSING": 11,
+    "TCP_NEW_SYN_RECV": 12})
 
 class Rule:
     def __init__(self, name=None, direction=None, src_ip=None, src_prefix_size=None,
