@@ -22,6 +22,8 @@ typedef __be16 port_t;
 #define LOG_ROW_BUFFER_SIZE 64
 #define MINOR_CONNS 2
 #define CONN_TABLE_CHUNCK_SIZE 8
+#define NO_DECISION 99
+#define REASON_EXISTING_TCP_CONNECTION -7
 
 #define DEVICE_NAME_CONNS "conns"
 
@@ -427,83 +429,111 @@ static int update_state_client(conn_row_t* conn_row, struct sk_buff *skb)
 	return 0;
 }
 
-static conn_row_t* add_conn_row(struct sk_buff *skb, int initialState)
-{
-	struct iphdr* ip_header = ip_hdr(skb);
-	struct tcphdr* tcp_header = tcp_hdr(skb);
-	conn_row_t* conn_row = kmalloc(sizeof(conn_row_t), GFP_KERNEL);
 
+
+static conn_row_t* add_conn_row(conn_t *conn, int initialState)
+{
+	conn_row_t* conn_row = kmalloc(sizeof(conn_row_t), GFP_KERNEL);
 	if(!conn_row){
 		printk(KERN_ERR "Failed to allocate memory\n");
 		return NULL;
 	}
 
-	conn_row->conn.src_ip = ip_header->saddr;
-	conn_row->conn.src_port = tcp_header->source;
-	conn_row->conn.dst_ip = ip_header->daddr;
-	conn_row->conn.dst_port = tcp_header->dest;
-
+	conn_row->conn = *conn;
 	conn_row->state = initialState;
-
 	hash_add(conn_hashtable, &conn_row->hnode, hash(&conn_row->conn));
-
 	return conn_row;
+}
+
+// decides what to do with the packet by the connection row in the table, and also updates if needed
+static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_t* conn_row)
+{
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+
+	int recv = ip_header->daddr == conn_row->conn.src_ip;
+	int send = !recv;
+
+	
+	switch (conn_row->state)
+	{
+		case TCP_CLOSE:
+			if(recv && tcp_header->syn && tcp_header->ack)
+				conn_row->state = TCP_SYN_SENT;
+			else
+				return -1;
+			break;
+
+		case WAIT_FOR_SYN_ACK:
+			if(!recv && tcp_header->ack)
+				conn_row->state = ESTABLISHED;
+			else
+				return -1;
+			break;
+
+		case ESTABLISHED:
+			if(!recv && tcp_header->fin)
+				conn_row->state = FIN_WAIT_1;
+			else
+				return -1;
+			break;	
+	}
+	return 0;
+
+}
+
+static int handle_by_conn_tab(struct sk_buff *skb)
+{
+	struct iphdr* ip_header = ip_hdr(skb);
+	struct tcphdr* tcp_header = tcp_hdr(skb);
+	conn_t skb_conn = { .src_ip = ip_header->saddr, .src_port = tcp_header->source, .dst_ip = ip_header->daddr, .dst_port = tcp_header->dest };
+	conn_t skb_conn_inv = { .src_ip = ip_header->daddr, .src_port = tcp_header->dest, .dst_ip = ip_header->saddr, .dst_port = tcp_header->source };
+	conn_row_t *conn_row, *conn_inv_row;
+	conn_row = search_conn_in_table(&skb_conn);
+	conn_inv_row = search_conn_in_table(&skb_conn_inv);
+
+	if(tcp_header->ack)
+	{
+		if(conn_row || conn_inv_row)
+			return handle_by_state_machine(skb, conn_row, conn_inv_row);
+		else 
+			return NF_DROP;
+	}
+		
+	// ACK = 0
+	if(tcp_header->syn)
+	{
+		if(!conn_row && !conn_inv_row)
+		{
+			conn_row = add_conn_row(&skb_conn, TCP_CLOSE);
+			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
+		}	
+		return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
+	}
+
+	return NF_DROP;
 }
 
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	int i;
 	rule_t* rule;
-	conn_row_t *conn_row, *conn_inv_row;
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header;
 	u_int8_t packet_prot = ip_header->protocol;
 	reason_t reason;
-	conn_t skb_conn, skb_conn_inv;
-	u_int8_t action = 99;
+	u_int8_t action = NO_DECISION;
 
 	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
-	if(packet_prot == PROT_TCP)
+	if(packet_prot == PROT_TCP && tcp_hdr(skb)->ack)
 	{
-		tcp_header = tcp_hdr(skb);
-		if(tcp_header->ack)
-		{
-			printk(KERN_DEBUG "0\n");
+		printk(KERN_DEBUG "0\n");
 
-			skb_conn.src_ip = ip_header->saddr;
-			skb_conn.src_port = tcp_header->source;
-			skb_conn.dst_ip = ip_header->daddr;
-			skb_conn.dst_port = tcp_header->dest;
-			
-			// inverted
-			skb_conn_inv.src_ip = ip_header->daddr;
-			skb_conn_inv.src_port = tcp_header->dest;
-			skb_conn_inv.dst_ip = ip_header->saddr;
-			skb_conn_inv.dst_port = tcp_header->source;
-
-			if((conn_row = search_conn_in_table(&skb_conn)))
-			{
-				update_state_server(conn_row, skb);
-			}
-			else if((conn_inv_row = search_conn_in_table(&skb_conn_inv)))
-			{
-				printk(KERN_DEBUG "1\n");
-
-				if(!tcp_header->syn)
-				{
-					printk(KERN_DEBUG "2\n");
-					action = NF_DROP;
-					reason = REASON_ILLEGAL_VALUE;
-					goto post_decision;
-				}
-				printk(KERN_DEBUG "3\n");
-
-				add_conn_row(skb, SYN_ACK_SENT);
-				update_state_client(conn_inv_row, skb);
-			}
-		}
+		action = handle_by_conn_tab(skb);
+		reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : REASON_EXISTING_TCP_CONNECTION;
+		goto post_decision;
 	}
 
 
@@ -524,7 +554,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 			break;
 		}
 	}
-	if(action == 99)
+	if(action == NO_DECISION)
 	{
 		action = default_rule.action;
 		reason = REASON_NO_MATCHING_RULE;
@@ -534,23 +564,10 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	{
 		printk(KERN_DEBUG "4\n");
 
-		tcp_header = tcp_hdr(skb);
-		if(tcp_header->syn)
-		{
-			printk(KERN_DEBUG "5\n");
-
-			add_conn_row(skb, SYN_SENT); // client SYN send case
-		}
-		else
-		{
-			printk(KERN_DEBUG "6\n");
-
-			action = NF_DROP;
-			reason = REASON_ILLEGAL_VALUE;
-			goto post_decision;
-		}
+		action = handle_by_conn_tab(skb);
+		reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : reason;
+		goto post_decision;
 	}
-
 
 
 post_decision:
