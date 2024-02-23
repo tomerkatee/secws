@@ -24,6 +24,8 @@ typedef __be16 port_t;
 #define CONN_HASHTABLE_SIZE_BITS 8
 #define NO_DECISION 99
 #define REASON_EXISTING_TCP_CONNECTION -7
+#define PORT_HTTP_SERVER 80
+#define PORT_FTP_SERVER 21
 
 #define DEVICE_NAME_CONNS "conns"
 
@@ -446,25 +448,33 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	return NF_DROP;
 }
 
+int ftp_data_connection(struct sk_buff *skb)
+{
+	
+}
+
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	int i;
 	rule_t* rule;
-	struct iphdr* ip_header = ip_hdr(skb);
-	u_int8_t packet_prot = ip_header->protocol;
+	struct iphdr* iph = ip_hdr(skb);
+	struct tcphdr* tcph;
+	u_int8_t packet_prot = iph->protocol;
 	reason_t reason;
 	u_int8_t action = NO_DECISION;
+	int dest_port;
 
-	if((ip_header->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
+	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
-	if(packet_prot == PROT_TCP && tcp_hdr(skb)->ack)
+	if(packet_prot == PROT_TCP)
 	{
-		printk(KERN_DEBUG "0\n");
-
-		action = handle_by_conn_tab(skb);
-		reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : REASON_EXISTING_TCP_CONNECTION;
-		goto post_decision;
+		if(tcp_hdr(skb)->ack || ftp_data_connection(skb))
+		{
+			action = handle_by_conn_tab(skb);
+			reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : REASON_EXISTING_TCP_CONNECTION;
+			goto post_decision;
+		}
 	}
 
 
@@ -493,8 +503,6 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	}
 	if(packet_prot == PROT_TCP && action == NF_ACCEPT)
 	{
-		printk(KERN_DEBUG "4\n");
-
 		action = handle_by_conn_tab(skb);
 		reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : reason;
 		goto post_decision;
@@ -503,6 +511,23 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 
 post_decision:
 	add_log(create_log(skb, action, reason));
+
+	if(packet_prot == PROT_TCP)
+	{
+		tcph = tcp_hdr(skb);
+		dest_port = tcph->dest;
+		if(dest_port == PORT_HTTP_SERVER || dest_port == PORT_FTP_SERVER)
+		{
+			tcph->dest = htons(ntohs(dest_port)*10);
+			tcph->check = 0; // critical for checksum correctness
+			tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr, )
+			
+
+			iph->daddr = htonl(INADDR_LOOPBACK);
+			iph->check = 0; // critical for checksum correctness
+			iph>check = ip_fast_csum(iph, iph->ihl);
+		}
+	}
 	return action;
 }
 
