@@ -21,7 +21,7 @@ typedef __be16 port_t;
 #define IP_ANY 0
 #define LOG_ROW_BUFFER_SIZE 64
 #define MINOR_CONNS 2
-#define CONN_TABLE_CHUNCK_SIZE 8
+#define CONN_HASHTABLE_SIZE_BITS 8
 #define NO_DECISION 99
 #define REASON_EXISTING_TCP_CONNECTION -7
 
@@ -79,9 +79,8 @@ static struct device* log_device = NULL;
 static struct device* conns_device = NULL;
 static log_iter read_log_iter;
 
-DEFINE_HASHTABLE(conn_hashtable, CONN_TABLE_CHUNCK_SIZE);
-int conn_hashtable_size = CONN_TABLE_CHUNCK_SIZE;
-int conn_rows_num = 0;
+// the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
+DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
 
 static rule_t loopback_rule = {
 	.rule_name = "loopback",
@@ -346,10 +345,6 @@ static conn_row_t* search_conn_in_table(conn_t *conn)
 	return NULL;
 }
 
-static void double_conn_hashtable(void)
-{
-	hash_for_each(conn_tab)
-}
 
 static conn_row_t* add_conn_row(conn_t *conn, int initialState)
 {
@@ -362,8 +357,6 @@ static conn_row_t* add_conn_row(conn_t *conn, int initialState)
 	conn_row->conn = *conn;
 	conn_row->state = initialState;
 	hash_add(conn_hashtable, &conn_row->hnode, hash(&conn_row->conn));
-	conn_rows_num++;
-	if(conn_rows_num > 0.75*conn_hashtable_size)
 
 	return conn_row;
 }
@@ -750,16 +743,8 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 	return curr - buf;
 }
 
-ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
-{
-	free__log_klist();
-	klist_init(&log_klist, NULL, NULL);
-	tail = NULL;
-	return count;
-}
-
 // deletes all nodes from klist and frees all kmalloc-ed memory
-void free_log_klist()
+void free_log_klist(void)
 {
 	struct klist_iter iter;
 	log_node *curr_log_node;
@@ -785,14 +770,24 @@ void free_log_klist()
 
 }
 
-// deletes all entries from hashtable and frees all kmalloc-ed memory
-void free_conn_hashtable()
+ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-    conn_row_t *conn_row, *tmp;
-    unsigned int bucket;
+	free_log_klist();
+	klist_init(&log_klist, NULL, NULL);
+	tail = NULL;
+	return count;
+}
+
+
+// deletes all entries from hashtable and frees all kmalloc-ed memory
+void free_conn_hashtable(void)
+{
+    conn_row_t *conn_row;
+	struct hlist_node *tmp;
+    int bucket;
 
     // Free memory for elements in the old hashtable
-    hash_for_each_safe(conn_hashtable, bucket, conn_row, tmp, hnode) {
+    hash_for_each_safe(conn_hashtable, bucket, tmp, conn_row, hnode) {
         hash_del(&conn_row->hnode);
         kfree(conn_row);
     }
