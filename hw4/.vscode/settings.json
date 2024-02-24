@@ -21,6 +21,7 @@
         "string.h": "c",
         "hashtable.h": "c",
         "tcp_states.h": "c",
-        "tcp.h": "c"
+        "tcp.h": "c",
+        "string": "c"
     }
 }

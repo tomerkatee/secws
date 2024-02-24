@@ -57,21 +57,25 @@ typedef struct{
 	port_t dst_port;
 } conn_t;
 
-
 typedef struct {
 	conn_t conn;	
 	int state;
-	struct hlist_node hnode;
-} conn_row_t;
+	int mitm_src_port;
+	struct klist_node node;
+} conn_row_node;
 
 typedef struct {
-	conn_row_t conn_c2s;
-	conn_row_t conn_s2c;
-} two_sided_conn;
+	conn_row_node* conn_row;
+	struct hlist_node hnode;
+} conn_row_p_node;
+
 
 static struct nf_hook_ops nfho_prert;
+static struct nf_hook_ops nfho_localout;
 static struct klist log_klist;
-static log_node* tail = NULL;
+static struct klist conn_klist;
+static log_node* tail_log = NULL;
+static conn_row_node* tail_conn = NULL;
 static rule_t custom_rules[MAX_RULES];
 static int num_custom_rules = 0;
 static int major_number;
@@ -83,6 +87,7 @@ static log_iter read_log_iter;
 
 // the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
 DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
+
 
 static rule_t loopback_rule = {
 	.rule_name = "loopback",
@@ -116,7 +121,11 @@ static rule_t default_rule = {
 	.action = NF_DROP
 };
 
-
+// gets conn_row_node reference from its klist_node
+static log_node* cast_to_conn_row_node(struct klist_node* knode)
+{
+	return knode ? container_of(knode, conn_row_node, node) : NULL;
+}
 
 // gets log_node reference from its klist_node
 static log_node* cast_to_log_node(struct klist_node* knode)
@@ -282,7 +291,7 @@ static void add_log_node(void)
 		printk(KERN_ERR "kmalloc failed\n");
 	log_node_p->rows_count = 0;
 	klist_add_tail(&log_node_p->node, &log_klist);
-	tail = log_node_p;
+	tail_log = log_node_p;
 }
 
 static int compare_log_rows(log_row_t *r1, log_row_t *r2)
@@ -314,11 +323,11 @@ static void add_log(log_row_t log_row)
 		}
 	}
 
-	if(!tail || tail->rows_count == LOG_CHUNK_SIZE)
+	if(!tail_log || tail_log->rows_count == LOG_CHUNK_SIZE)
 		add_log_node();
 
-	// tail is now updated to the new log_node
-	tail->data[tail->rows_count++] = log_row;
+	// tail_log is now updated to the new log_node
+	tail_log->data[tail_log->rows_count++] = log_row;
 }
 
 static int conn_eq(conn_t *conn1, conn_t *conn2)
@@ -329,18 +338,18 @@ static int conn_eq(conn_t *conn1, conn_t *conn2)
 		   conn1->dst_port == conn2->dst_port;
 }
 
-static int hash(conn_t *conn)
+static int hash_conn(conn_t *conn)
 {
 	return conn->src_ip + conn->dst_ip + conn->src_port + conn->dst_port;
 }
 
-static conn_row_t* search_conn_in_table(conn_t *conn)
+static conn_row_node* search_conn_in_table(conn_t *conn)
 {
-	conn_row_t* curr;
+	conn_row_p_node* curr;
 
-	hash_for_each_possible(conn_hashtable, curr, hnode, hash(conn))
+	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(conn))
 	{
-		if(conn_eq(&curr->conn, conn))
+		if(conn_eq(&curr->conn_row->conn, conn))
 			return curr;
 	}
 
@@ -348,9 +357,9 @@ static conn_row_t* search_conn_in_table(conn_t *conn)
 }
 
 
-static conn_row_t* add_conn_row(conn_t *conn, int initialState)
+static conn_row_node* add_conn_row(conn_t *conn, int initialState)
 {
-	conn_row_t* conn_row = kmalloc(sizeof(conn_row_t), GFP_KERNEL);
+	conn_row_node* conn_row = kmalloc(sizeof(conn_row_node), GFP_KERNEL);
 	if(!conn_row){
 		printk(KERN_ERR "Failed to allocate memory\n");
 		return NULL;
@@ -358,16 +367,30 @@ static conn_row_t* add_conn_row(conn_t *conn, int initialState)
 
 	conn_row->conn = *conn;
 	conn_row->state = initialState;
-	hash_add(conn_hashtable, &conn_row->hnode, hash(&conn_row->conn));
-
+	klist_add_tail(&conn_row->node, &conn_klist);
+	tail_conn = conn_row;
 	return conn_row;
+}
+
+static conn_row_node* add_conn_row_to_hash(conn_row_node* conn_row)
+{
+	conn_row_p_node* conn_row_p = kmalloc(sizeof(conn_row_p_node), GFP_KERNEL);
+	if(!conn_row_p){
+		printk(KERN_ERR "Failed to allocate memory\n");
+		return NULL;
+	}
+
+	conn_row_p->conn_row = conn_row;
+	hash_add(conn_hashtable, &conn_row_p->hnode, hash_conn(&conn_row->conn));
+
+	return conn_row_p;
 }
 
 
 //TODO: think about acks are they mandatory to write here?
 
 // decides what to do with the packet by the connection row in the table, and also updates if needed
-static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_t* conn_row)
+static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_row)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
@@ -422,7 +445,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 	conn_t skb_conn = { .src_ip = ip_header->saddr, .src_port = tcp_header->source, .dst_ip = ip_header->daddr, .dst_port = tcp_header->dest };
 	conn_t skb_conn_inv = { .src_ip = ip_header->daddr, .src_port = tcp_header->dest, .dst_ip = ip_header->saddr, .dst_port = tcp_header->source };
-	conn_row_t *conn_row, *conn_inv_row;
+	conn_row_node *conn_row, *conn_inv_row;
 	conn_row = search_conn_in_table(&skb_conn);
 	conn_inv_row = search_conn_in_table(&skb_conn_inv);
 
@@ -441,6 +464,8 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 		{
 			conn_row = add_conn_row(&skb_conn, TCP_CLOSE);
 			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
+			add_conn_row_to_hash(conn_row);
+			add_conn_row_to_hash(conn_inv_row);
 		}	
 		return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
 	}
@@ -450,7 +475,28 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 
 int ftp_data_connection(struct sk_buff *skb)
 {
+	return 0;
+}
+
+static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port, ip_t dst_ip, port_t dst_port)
+{
+	struct iphdr* iph = ip_hdr(skb);
+	struct tcphdr* tcph = tcp_hdr(skb);
+	int tcp_len;
+
+	iph->saddr = src_ip;
+	tcph->source = src_port;
+	iph->daddr = dst_ip;	
+	tcph->dest = dst_port;
 	
+	tcp_len = skb->len - (iph->ihl<<2);
+	tcph->check = 0; // critical for checksum correctness
+	tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr, tcp_len, iph->protocol, csum_partial((char *)tcph, tcp_len, 0));
+
+	skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	iph->check = 0; // critical for checksum correctness
+	iph->check = ip_fast_csum(iph, iph->ihl);
 }
 
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
@@ -518,17 +564,36 @@ post_decision:
 		dest_port = tcph->dest;
 		if(dest_port == PORT_HTTP_SERVER || dest_port == PORT_FTP_SERVER)
 		{
-			tcph->dest = htons(ntohs(dest_port)*10);
-			tcph->check = 0; // critical for checksum correctness
-			tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr, )
-			
+			set_packet_fields(skb, iph->saddr, tcph->source, htonl(INADDR_LOOPBACK), htons(ntohs(dest_port)*10));
+		}
+		
+	}
 
-			iph->daddr = htonl(INADDR_LOOPBACK);
-			iph->check = 0; // critical for checksum correctness
-			iph>check = ip_fast_csum(iph, iph->ihl);
+	return action;
+}
+
+
+static int localout_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
+{
+	conn_row_p_node* curr;
+	conn_t *correct_conn;
+	struct tcphdr* tcph;
+	struct iphdr* iph = ip_hdr(skb);
+
+	if((iph->version != 4) || (iph->protocol != PROT_TCP) || rule_match(&loopback_rule, skb))
+		return NF_ACCEPT;
+
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, tcph->source)
+	{
+		if(curr->conn_row->mitm_src_port == tcph->source)
+		{
+			correct_conn = &curr->conn_row->conn;
+			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
 	}
-	return action;
+
+	return NF_ACCEPT;
 }
 
 
@@ -769,26 +834,31 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 }
 
 // deletes all nodes from klist and frees all kmalloc-ed memory
-void free_log_klist(void)
+void free_log_klist(struct klist* list)
 {
 	struct klist_iter iter;
-	log_node *curr_log_node;
+	void* curr_node;
 	struct klist_node *prev;
 	struct klist_node *curr;
+	void* tail = list == &log_klist ? tail_log : tail_conn;
+	struct klist_node *tail_knode; 
 
 	if(!tail)
 		return;
+	
+	tail_knode = list == &log_klist ? &((log_node*)tail)->node : &((conn_row_node*)tail)->node;
 
-	klist_iter_init_node(&log_klist, &iter, &tail->node);
+
+	klist_iter_init_node(list, &iter, tail_knode);
 
 	do 
 	{
 		curr = iter.i_cur;
-		curr_log_node = cast_to_log_node(curr);
-		kfree(curr_log_node->data);
+		if(list == &log_klist)
+			kfree(cast_to_log_node(curr)->data);
 		prev = klist_prev(&iter);
 		klist_del(curr);
-		kfree(curr_log_node);
+		kfree(curr_node);
 	} while(prev);
 
 	klist_iter_exit(&iter);
@@ -797,9 +867,9 @@ void free_log_klist(void)
 
 ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	free_log_klist();
+	free_klist(&log_klist);
 	klist_init(&log_klist, NULL, NULL);
-	tail = NULL;
+	tail_log = NULL;
 	return count;
 }
 
@@ -807,18 +877,18 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 // deletes all entries from hashtable and frees all kmalloc-ed memory
 void free_conn_hashtable(void)
 {
-    conn_row_t *conn_row;
+    conn_row_p_node *conn_row_p;
 	struct hlist_node *tmp;
     int bucket;
 
     // Free memory for elements in the old hashtable
-    hash_for_each_safe(conn_hashtable, bucket, tmp, conn_row, hnode) {
-        hash_del(&conn_row->hnode);
-        kfree(conn_row);
+    hash_for_each_safe(conn_hashtable, bucket, tmp, conn_row_p, hnode) {
+        hash_del(&conn_row_p->hnode);
+        kfree(conn_row_p);
     }
 }
 
-char* copy_conn_row_to_buffer(char *buff, conn_row_t *conn_row)
+char* copy_conn_row_to_buffer(char *buff, conn_row_node *conn_row)
 {
 	char *curr = buff;
 
@@ -831,17 +901,35 @@ char* copy_conn_row_to_buffer(char *buff, conn_row_t *conn_row)
 	return curr;
 }
 
+// ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
+// {
+// 	char *curr = buf;
+// 	conn_row_node *conn_row;
+// 	int bucket;
+// 	hash_for_each(conn_hashtable, bucket, conn_row, hnode)
+// 	{
+// 		curr = copy_conn_row_to_buffer(curr, conn_row);
+// 	}
+
+// 	return curr - buf;
+// }
+
+
 ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
+	conn_row_node *conn_row;
 	char *curr = buf;
-	conn_row_t *conn_row;
-	int bucket;
-	hash_for_each(conn_hashtable, bucket, conn_row, hnode)
+	struct klist_iter iter;
+
+	klist_iter_init(&conn_klist, &iter);
+	while(klist_next(&iter))
 	{
+		conn_row = cast_to_conn_row_node(iter.i_cur);
 		curr = copy_conn_row_to_buffer(curr, conn_row);
 	}
+	klist_iter_exit(&iter);
 
-	return curr - buf;
+	return curr-buf;
 }
 
 
@@ -905,6 +993,7 @@ register_chrdev_failed:
 
 static int __init my_module_init_function(void) {
 	klist_init(&log_klist, NULL, NULL);
+	klist_init(&conn_klist, NULL, NULL);
 	hash_init(conn_hashtable);
 
 	nfho_prert.hook = (nf_hookfn*)prert_hook_function;
@@ -912,6 +1001,13 @@ static int __init my_module_init_function(void) {
     nfho_prert.pf = PF_INET;
     nfho_prert.priority = NF_IP_PRI_FIRST;
     nf_register_net_hook(&init_net, &nfho_prert);
+
+	nfho_localout.hook = (nf_hookfn*)localout_hook_function;
+    nfho_localout.hooknum = NF_INET_LOCAL_OUT;
+    nfho_localout.pf = PF_INET;
+    nfho_localout.priority = NF_IP_PRI_FIRST;
+    nf_register_net_hook(&init_net, &nfho_localout);
+
 
     if(register_sysfs_chrdev())
 	{
@@ -923,10 +1019,12 @@ static int __init my_module_init_function(void) {
 }
 
 static void __exit my_module_exit_function(void) {
-	free_log_klist();
+	free_klist(&log_klist);
+	free_klist(&conn_klist);
 	free_conn_hashtable();
 
     nf_unregister_net_hook(&init_net, &nfho_prert);
+    nf_unregister_net_hook(&init_net, &nfho_localout);
 
 	device_remove_file(conns_device, (const struct device_attribute *)&dev_attr_conns.attr);
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_CONNS));

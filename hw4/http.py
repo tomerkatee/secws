@@ -417,14 +417,13 @@ def show_conns():
 
     
 def main():
-    mitm_http = socket.socket()
-    port_num = 800
-    mitm_http.bind(port_num)
-    mitm_http.listen()
+    mitm_http = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    mitm_http.bind(('0.0.0.0', 800))
+    mitm_http.listen(10)
 
     while True:
         client_socket, client_addr = mitm_http.accept()
-        server_socket = server
+        print()
 
 
 
