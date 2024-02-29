@@ -369,7 +369,7 @@ static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
 
 	hash_for_each_possible(conn_hashtable, curr, hnode, mitm_port)
 	{
-		if(curr->conn_row->mitm_src_port, mitm_port)
+		if(curr->conn_row->mitm_src_port == mitm_port)
 			return curr->conn_row;
 	}
 
@@ -598,12 +598,15 @@ post_decision:
 	{
 		tcph = tcp_hdr(skb);
 		dest_port = tcph->dest;
-		if(dest_port == PORT_HTTP_SERVER || dest_port == PORT_FTP_SERVER)
+		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
 		{
-			set_packet_fields(skb, iph->saddr, tcph->source, htonl(INADDR_LOOPBACK), htons(ntohs(dest_port)*10));
+			printk("%d\n", action);
+			set_packet_fields(skb, iph->saddr, tcph->source, htonl(IP_ANY), htons(ntohs(dest_port)*10));
 		}
 		
 	}
+
+	return NF_ACCEPT;
 
 	return action;
 }
@@ -615,17 +618,44 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	conn_t *correct_conn;
 	struct tcphdr* tcph;
 	struct iphdr* iph = ip_hdr(skb);
+	struct klist_iter iter;
+	conn_row_node* conn_row;
+
+	printk("0\n");
+
 
 	if((iph->version != 4) || (iph->protocol != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
+	tcph = tcp_hdr(skb);
 
-	hash_for_each_possible(conn_hashtable, curr, hnode, tcph->source)
+	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10))
 	{
-		if(curr->conn_row->mitm_src_port == tcph->source)
+		printk("2\n");
+		klist_iter_init(&conn_klist, &iter);
+		while(klist_next(&iter))
 		{
-			correct_conn = &curr->conn_row->conn;
-			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
+			conn_row = cast_to_conn_row_node(iter.i_cur);
+			if(conn_row->conn.dst_ip == iph->daddr && conn_row->conn.dst_port == tcph->dest)
+			{
+				printk("3\n");
+				correct_conn = &conn_row->conn;
+				set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
+			}
+		}
+		klist_iter_exit(&iter);
+	}
+	else
+	{
+		printk("4\n");
+		hash_for_each_possible(conn_hashtable, curr, hnode, tcph->source)
+		{
+			if(curr->conn_row->mitm_src_port == tcph->source)
+			{
+				printk("5\n");
+				correct_conn = &curr->conn_row->conn;
+				set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
+			}
 		}
 	}
 
@@ -642,32 +672,15 @@ char* copy_log_row_to_buffer(char *buff, log_row_t *log)
 {
 	char *curr = buff;
 
-	memcpy(curr, &log->timestamp, sizeof(log->timestamp));
-	curr += sizeof(log->timestamp);
-
-	memcpy(curr, &log->protocol, sizeof(log->protocol));
-	curr += sizeof(log->protocol);
-
-	memcpy(curr, &log->action, sizeof(log->action));
-	curr += sizeof(log->action);
-
-	memcpy(curr, &log->src_ip, sizeof(log->src_ip));
-	curr += sizeof(log->src_ip);
-
-	memcpy(curr, &log->dst_ip, sizeof(log->dst_ip));
-	curr += sizeof(log->dst_ip);
-
-	memcpy(curr, &log->src_port, sizeof(log->src_port));
-	curr += sizeof(log->src_port);
-
-	memcpy(curr, &log->dst_port, sizeof(log->dst_port));
-	curr += sizeof(log->dst_port);
-
-	memcpy(curr, &log->reason, sizeof(log->reason));
-	curr += sizeof(log->reason);
-
-	memcpy(curr, &log->count, sizeof(log->count));
-	curr += sizeof(log->count);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->timestamp);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->protocol);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->action);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->src_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->dst_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->src_port);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->dst_port);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->reason);
+	COPY_FROM_VAR_AND_ADVANCE(curr, log->count);
 
 	return curr;
 }
@@ -744,38 +757,17 @@ const char* set_rule_from_buffer(const char* buff, rule_t *rule)
 {
 	const char *curr = buff;
 
-	memcpy(&rule->rule_name, curr, sizeof(rule->rule_name));
-	curr += sizeof(rule->rule_name);
-
-	memcpy(&rule->direction, curr, sizeof(rule->direction));
-	curr += sizeof(rule->direction);
-
-	memcpy(&rule->src_ip, curr, sizeof(rule->src_ip));
-	curr += sizeof(rule->src_ip);
-
-	memcpy(&rule->src_prefix_size, curr, sizeof(rule->src_prefix_size));
-	curr += sizeof(rule->src_prefix_size);
-
-	memcpy(&rule->dst_ip, curr, sizeof(rule->dst_ip));
-	curr += sizeof(rule->dst_ip);
-
-	memcpy(&rule->dst_prefix_size, curr, sizeof(rule->dst_prefix_size));
-	curr += sizeof(rule->dst_prefix_size);
-
-	memcpy(&rule->src_port, curr, sizeof(rule->src_port));
-	curr += sizeof(rule->src_port);
-
-	memcpy(&rule->dst_port, curr, sizeof(rule->dst_port));
-	curr += sizeof(rule->dst_port);
-
-	memcpy(&rule->protocol, curr, sizeof(rule->protocol));
-	curr += sizeof(rule->protocol);
-
-	memcpy(&rule->ack, curr, sizeof(rule->ack));
-	curr += sizeof(rule->ack);
-
-	memcpy(&rule->action, curr, sizeof(rule->action));
-	curr += sizeof(rule->action);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->rule_name);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->direction);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->src_ip);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->src_prefix_size);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->dst_ip);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->dst_prefix_size);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->src_port);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->dst_port);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->protocol);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->ack);
+	COPY_TO_VAR_AND_ADVANCE(curr, rule->action);
 
 	if (!(rule->src_prefix_size <= 32
 		&& rule->dst_prefix_size <= 32
@@ -822,39 +814,18 @@ ssize_t modify_rules(struct device *dev, struct device_attribute *attr, const ch
 char* copy_rule_to_buffer(char *buff, rule_t *rule)
 {
 	char *curr = buff;
-
-	memcpy(curr, rule->rule_name, sizeof(rule->rule_name));
-	curr += sizeof(rule->rule_name);
-
-	memcpy(curr, &rule->direction, sizeof(rule->direction));
-	curr += sizeof(rule->direction);
-
-	memcpy(curr, &rule->src_ip, sizeof(rule->src_ip));
-	curr += sizeof(rule->src_ip);
-
-	memcpy(curr, &rule->src_prefix_size, sizeof(rule->src_prefix_size));
-	curr += sizeof(rule->src_prefix_size);
-
-	memcpy(curr, &rule->dst_ip, sizeof(rule->dst_ip));
-	curr += sizeof(rule->dst_ip);
-
-	memcpy(curr, &rule->dst_prefix_size, sizeof(rule->dst_prefix_size));
-	curr += sizeof(rule->dst_prefix_size);
-
-	memcpy(curr, &rule->src_port, sizeof(rule->src_port));
-	curr += sizeof(rule->src_port);
-
-	memcpy(curr, &rule->dst_port, sizeof(rule->dst_port));
-	curr += sizeof(rule->dst_port);
-
-	memcpy(curr, &rule->protocol, sizeof(rule->protocol));
-	curr += sizeof(rule->protocol);
-
-	memcpy(curr, &rule->ack, sizeof(rule->ack));
-	curr += sizeof(rule->ack);
-
-	memcpy(curr, &rule->action, sizeof(rule->action));
-	curr += sizeof(rule->action);
+	
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->rule_name);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->direction);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->src_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->src_prefix_size);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->dst_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->dst_prefix_size);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->src_port);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->dst_port);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->protocol);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->ack);
+	COPY_FROM_VAR_AND_ADVANCE(curr, rule->action);
 
 	return curr;
 }
@@ -870,13 +841,13 @@ ssize_t display_rules(struct device *dev, struct device_attribute *attr, char *b
 }
 
 // deletes all nodes from klist and frees all kmalloc-ed memory
-void free_log_klist(struct klist* list)
+void free_klist(struct klist* list)
 {
 	struct klist_iter iter;
 	void* curr_node;
 	struct klist_node *prev;
 	struct klist_node *curr;
-	void* tail = list == &log_klist ? tail_log : tail_conn;
+	void* tail = (list == &log_klist) ? (void*)tail_log : (void*)tail_conn;
 	struct klist_node *tail_knode; 
 
 	if(!tail)

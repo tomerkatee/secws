@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 import struct
-import os
-import sys
-import ipaddress
-import datetime
 import socket
-import http.server
 from main import Rule, convert_to_little_end_port, convert_to_big_end_port
 import base64
    
@@ -20,7 +15,7 @@ def main():
 
 
     mitm_http = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    mitm_http.bind(('0.0.0.0', 800))
+    mitm_http.bind(('', 800))
     mitm_http.listen(10)
 
 
@@ -35,6 +30,8 @@ def main():
             client_ip = Rule.ip_str_to_int(client_addr[0])
             client_port = convert_to_big_end_port(client_addr[1])
             mitm_port = convert_to_big_end_port(mitm_client_socket.getsockname()[1])
+
+            print(str.format("client_ip: {}, client_port: {}, mitm_port: {}", client_ip, client_port, mitm_port))
 
             mitm_attr.write(struct.pack(mitm_update_format, client_ip, client_port, mitm_port))
 
