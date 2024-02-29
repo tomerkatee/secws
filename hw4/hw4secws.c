@@ -31,9 +31,14 @@ typedef __be16 port_t;
 
 #define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
 
-#define COPY_AND_ADVANCE(buf, st_p, field_id) do {\
-						memcpy((buf), &(st_p)->field_id, sizeof((st_p)->field_id));\
-						(buf) += sizeof((st_p)->field_id);\
+#define COPY_FROM_VAR_AND_ADVANCE(buf, var) do {\
+						memcpy((buf), &(var), sizeof(var));\
+						(buf) += sizeof(var);\
+						} while(0)
+
+#define COPY_TO_VAR_AND_ADVANCE(buf, var) do {\
+						memcpy(&(var), (buf), sizeof(var));\
+						(buf) += sizeof(var);\
 						} while(0)
 
 
@@ -123,7 +128,7 @@ static rule_t default_rule = {
 };
 
 // gets conn_row_node reference from its klist_node
-static log_node* cast_to_conn_row_node(struct klist_node* knode)
+static conn_row_node* cast_to_conn_row_node(struct klist_node* knode)
 {
 	return knode ? container_of(knode, conn_row_node, node) : NULL;
 }
@@ -370,13 +375,13 @@ static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
 
 	return NULL;
 }
-
+/*
 static int hash_src(ip_t src_ip, port_t src_port)
 {
 	return src_ip + src_port;
 }
 
-static conn_row_node* search_conn_table_by_src(ip_t src_ip, port_t src_port)
+ static conn_row_node* search_conn_table_by_src(ip_t src_ip, port_t src_port)
 {
 	conn_row_p_node* curr;
 
@@ -387,7 +392,7 @@ static conn_row_node* search_conn_table_by_src(ip_t src_ip, port_t src_port)
 	}
 
 	return NULL;
-}
+} */
 
 
 
@@ -501,6 +506,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
 			add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
 			add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
+
 		}	
 		return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
 	}
@@ -908,17 +914,24 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 	ip_t client_ip;
 	port_t client_port;
 	const char *curr = buf;
+	struct klist_iter iter;
+	conn_row_node *conn_row;
 
-	memcpy(&client_ip, curr, sizeof(client_ip));
-	curr += sizeof(client_ip);
-
-	memcpy(&client_port, curr, sizeof(client_ip));
-	curr += sizeof(client_port);
-
-	memcpy(&curr_mitm_port, curr, sizeof(client_ip));
-	curr += sizeof(client_ip);
+	COPY_TO_VAR_AND_ADVANCE(curr, client_ip);
+	COPY_TO_VAR_AND_ADVANCE(curr, client_port);
+	COPY_TO_VAR_AND_ADVANCE(curr, curr_mitm_port);
 	
-	search
+	klist_iter_init(&conn_klist, &iter);
+	while(klist_next(&iter))
+	{
+		conn_row = cast_to_conn_row_node(iter.i_cur);
+		if(conn_row->conn.src_ip == client_ip && conn_row->conn.src_port == client_port)
+		{
+			conn_row->mitm_src_port = curr_mitm_port;
+			break;
+		}
+	}
+	klist_iter_exit(&iter);
 
 	return count;
 }
@@ -926,9 +939,12 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	char *curr = buf;
+	conn_row_node *conn_row;
 
+	conn_row = search_conn_table_by_mitm_port(curr_mitm_port);
 
-	memcpy(curr, )
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_port);
 
 	return curr - buf;
 }
@@ -951,11 +967,11 @@ char* copy_conn_row_to_buffer(char *buff, conn_row_node *conn_row)
 {
 	char *curr = buff;
 
-	COPY_AND_ADVANCE(curr, conn_row, conn.src_ip);
-	COPY_AND_ADVANCE(curr, conn_row, conn.dst_ip);
-	COPY_AND_ADVANCE(curr, conn_row, conn.src_port);
-	COPY_AND_ADVANCE(curr, conn_row, conn.dst_port);
-	COPY_AND_ADVANCE(curr, conn_row, state);
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.src_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_ip);
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.src_port);
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_port);
+	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->state);
 
 	return curr;
 }
