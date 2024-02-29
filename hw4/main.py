@@ -197,12 +197,14 @@ def line_to_rule(line:str):
         return -1
     rule.protocol = res
 
+    # src_port
     res = try_convert_to_port(fields[5])
     if(res == -1):
         print_error("source port")
         return -1
     rule.src_port = res
     
+    # dst_port
     res = try_convert_to_port(fields[6])
     if(res == -1):
         print_error("destination port")

@@ -84,6 +84,7 @@ static struct device* rules_device = NULL;
 static struct device* log_device = NULL;
 static struct device* conns_device = NULL;
 static log_iter read_log_iter;
+static port_t curr_mitm_port;
 
 // the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
 DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
@@ -343,18 +344,52 @@ static int hash_conn(conn_t *conn)
 	return conn->src_ip + conn->dst_ip + conn->src_port + conn->dst_port;
 }
 
-static conn_row_node* search_conn_in_table(conn_t *conn)
+static conn_row_node* search_conn_table_by_conn(conn_t *conn)
 {
 	conn_row_p_node* curr;
 
 	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(conn))
 	{
 		if(conn_eq(&curr->conn_row->conn, conn))
+			return curr->conn_row;
+	}
+
+	return NULL;
+}
+
+
+static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
+{
+	conn_row_p_node* curr;
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, mitm_port)
+	{
+		if(curr->conn_row->mitm_src_port, mitm_port)
+			return curr->conn_row;
+	}
+
+	return NULL;
+}
+
+static int hash_src(ip_t src_ip, port_t src_port)
+{
+	return src_ip + src_port;
+}
+
+static conn_row_node* search_conn_table_by_src(ip_t src_ip, port_t src_port)
+{
+	conn_row_p_node* curr;
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, hash_src(src_ip, src_port))
+	{
+		if(curr->conn_row->conn.src_ip == src_ip && curr->conn_row->conn.src_port == src_port)
 			return curr;
 	}
 
 	return NULL;
 }
+
+
 
 
 static conn_row_node* add_conn_row(conn_t *conn, int initialState)
@@ -372,7 +407,7 @@ static conn_row_node* add_conn_row(conn_t *conn, int initialState)
 	return conn_row;
 }
 
-static conn_row_node* add_conn_row_to_hash(conn_row_node* conn_row)
+static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int hash)
 {
 	conn_row_p_node* conn_row_p = kmalloc(sizeof(conn_row_p_node), GFP_KERNEL);
 	if(!conn_row_p){
@@ -381,7 +416,7 @@ static conn_row_node* add_conn_row_to_hash(conn_row_node* conn_row)
 	}
 
 	conn_row_p->conn_row = conn_row;
-	hash_add(conn_hashtable, &conn_row_p->hnode, hash_conn(&conn_row->conn));
+	hash_add(conn_hashtable, &conn_row_p->hnode, hash);
 
 	return conn_row_p;
 }
@@ -446,8 +481,8 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	conn_t skb_conn = { .src_ip = ip_header->saddr, .src_port = tcp_header->source, .dst_ip = ip_header->daddr, .dst_port = tcp_header->dest };
 	conn_t skb_conn_inv = { .src_ip = ip_header->daddr, .src_port = tcp_header->dest, .dst_ip = ip_header->saddr, .dst_port = tcp_header->source };
 	conn_row_node *conn_row, *conn_inv_row;
-	conn_row = search_conn_in_table(&skb_conn);
-	conn_inv_row = search_conn_in_table(&skb_conn_inv);
+	conn_row = search_conn_table_by_conn(&skb_conn);
+	conn_inv_row = search_conn_table_by_conn(&skb_conn_inv);
 
 	if(tcp_header->ack)
 	{
@@ -464,18 +499,13 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 		{
 			conn_row = add_conn_row(&skb_conn, TCP_CLOSE);
 			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
-			add_conn_row_to_hash(conn_row);
-			add_conn_row_to_hash(conn_inv_row);
+			add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
+			add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
 		}	
 		return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
 	}
 
 	return NF_DROP;
-}
-
-int ftp_data_connection(struct sk_buff *skb)
-{
-	return 0;
 }
 
 static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port, ip_t dst_ip, port_t dst_port)
@@ -515,7 +545,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 
 	if(packet_prot == PROT_TCP)
 	{
-		if(tcp_hdr(skb)->ack || ftp_data_connection(skb))
+		if(tcp_hdr(skb)->ack || tcp_hdr(skb)->source == htons(20)) // src_port = 20 represents an ftp data connection from the server
 		{
 			action = handle_by_conn_tab(skb);
 			reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : REASON_EXISTING_TCP_CONNECTION;
@@ -873,6 +903,35 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	return count;
 }
 
+ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	ip_t client_ip;
+	port_t client_port;
+	const char *curr = buf;
+
+	memcpy(&client_ip, curr, sizeof(client_ip));
+	curr += sizeof(client_ip);
+
+	memcpy(&client_port, curr, sizeof(client_ip));
+	curr += sizeof(client_port);
+
+	memcpy(&curr_mitm_port, curr, sizeof(client_ip));
+	curr += sizeof(client_ip);
+	
+	search
+
+	return count;
+}
+
+ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
+{
+	char *curr = buf;
+
+
+	memcpy(curr, )
+
+	return curr - buf;
+}
 
 // deletes all entries from hashtable and frees all kmalloc-ed memory
 void free_conn_hashtable(void)
@@ -936,6 +995,7 @@ ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *b
 static DEVICE_ATTR(rules, S_IWUSR | S_IRUGO, display_rules, modify_rules);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, modify_reset);
 static DEVICE_ATTR(conns, S_IRUSR, display_conns, NULL);
+static DEVICE_ATTR(mitm, S_IWUSR | S_IRUGO, display_mitm, modify_mitm);
 
 static int register_sysfs_chrdev(void)
 {
@@ -969,10 +1029,13 @@ static int register_sysfs_chrdev(void)
 	if (device_create_file(conns_device, (const struct device_attribute *)&dev_attr_conns.attr))
 		goto conns_attr_create_failed;
 	
+	if (device_create_file(conns_device, (const struct device_attribute *)&dev_attr_mitm.attr))
+		goto mitm_attr_create_failed;
 
 	return 0;
 
 	// error handling
+mitm_attr_create_failed:
 conns_attr_create_failed:
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_CONNS));
 conns_device_create_failed:
