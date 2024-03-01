@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import errno
 import struct
 import socket
+import sys
 from main import Rule, convert_to_little_end_port, convert_to_big_end_port
 import base64
    
@@ -8,7 +10,42 @@ import base64
 path_to_mitm_attr = "/sys/class/fw/conns/mitm"
 mitm_update_format = "<I H H"
 mitm_get_server_format = "<I H"
+BUFFER_SIZE = 1024
 
+
+def send_until_blocking(send_socket, data):
+    try:
+        sent_cnt = send_socket.send(data)
+        
+    except socket.error as e:
+        err = e.args[0]
+        if err == errno.EAGAIN or err == errno.EWOULDBLOCK:
+            return sent_cnt
+        else:
+            # a "real" error occurred
+            print(e)
+            send_socket.close()
+            sys.exit(1)
+
+    return sent_cnt
+    
+    
+def recv_until_blocking(recv_socket):
+    data = None
+    try:
+        data = recv_socket.recv(BUFFER_SIZE)
+        
+    except socket.error as e:
+        err = e.args[0]
+        if err == errno.EAGAIN or err == errno.EWOULDBLOCK:
+            return data
+        else:
+            # a "real" error occurred
+            print(e)
+            recv_socket.close()
+            sys.exit(1)
+
+    return data
 
     
 def main():
@@ -18,7 +55,6 @@ def main():
     mitm_http.bind(('', 800))
     mitm_http.listen(10)
 
-    BUFFER_SIZE = 1024
 
     while True:
         client_socket, client_addr = mitm_http.accept()
@@ -47,14 +83,19 @@ def main():
 
             mitm_client_socket.connect((server_ip, server_port))
 
-            while True:
-                data = client_socket.recv(BUFFER_SIZE)
-                print(data)
-                mitm_client_socket.send(data)
+            client_socket.setblocking(False)
+            mitm_client_socket.setblocking(False)
 
-                data = mitm_client_socket.recv(BUFFER_SIZE)
-                print(data)
-                client_socket.send(data)
+            while True:
+                data = recv_until_blocking(client_socket)
+                if data:
+                    print(data)
+                    send_until_blocking(mitm_client_socket, data)
+
+                data = recv_until_blocking(mitm_client_socket)
+                if data:
+                    print(data)
+                    send_until_blocking(client_socket, data)
 
 
             
