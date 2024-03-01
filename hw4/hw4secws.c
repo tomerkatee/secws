@@ -6,6 +6,7 @@
 #include <linux/string.h>
 #include <linux/hashtable.h>
 #include <net/tcp_states.h>
+#include <net/tcp.h>
 
 
 MODULE_LICENSE("GPL");
@@ -516,14 +517,49 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 
 static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port, ip_t dst_ip, port_t dst_port)
 {
+	int tcp_len;
 	struct iphdr* iph = ip_hdr(skb);
 	struct tcphdr* tcph = tcp_hdr(skb);
-	int tcp_len;
 
-	iph->saddr = src_ip;
-	tcph->source = src_port;
 	iph->daddr = dst_ip;	
 	tcph->dest = dst_port;
+	iph->saddr = src_ip;
+	tcph->source = src_port;
+
+	/* Fix IP header checksum */
+	iph->check = 0;
+	iph->check = ip_fast_csum((u8 *)iph, iph->ihl);
+
+	/*
+	* From Linux doc here: https://elixir.bootlin.com/linux/v4.15/source/include/linux/skbuff.h#L90
+	* CHECKSUM_NONE:
+	*
+	*   Device did not checksum this packet e.g. due to lack of capabilities.
+	*   The packet contains full (though not verified) checksum in packet but
+	*   not in skb->csum. Thus, skb->csum is undefined in this case.
+	*/
+	skb->ip_summed = CHECKSUM_NONE;
+	skb->csum_valid = 0;
+
+	/* Linearize the skb */
+	if (skb_linearize(skb) < 0) {
+		// TODO: Handle error
+	}
+
+	/* Re-take headers. The linearize may change skb's pointers */
+	iph = ip_hdr(skb);
+	tcph = tcp_hdr(skb);
+
+	/* Fix TCP header checksum */
+	tcp_len = (ntohs(iph->tot_len) - ((iph->ihl) << 2));
+	tcph->check = 0;
+	tcph->check = tcp_v4_check(tcp_len, iph->saddr, iph->daddr, csum_partial((char *)tcph, tcp_len, 0));
+
+	
+/* 	
+
+
+
 	
 	tcp_len = skb->len - (iph->ihl<<2);
 	tcph->check = 0; // critical for checksum correctness
@@ -532,7 +568,7 @@ static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port,
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 	iph->check = 0; // critical for checksum correctness
-	iph->check = ip_fast_csum(iph, iph->ihl);
+	iph->check = ip_fast_csum(iph, iph->ihl); */
 }
 
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
@@ -600,12 +636,15 @@ post_decision:
 		dest_port = tcph->dest;
 		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
 		{
-			printk("%d\n", action);
+			printk("%d\n", ntohs(dest_port));
 			set_packet_fields(skb, iph->saddr, tcph->source, htonl(IP_ANY), htons(ntohs(dest_port)*10));
+			printk("%d\n", ntohs(tcph->dest));
+			printk("%d\n", ntohl(iph->daddr));
 		}
 		
 	}
 
+	///////////////////////////////////////////// delete this line
 	return NF_ACCEPT;
 
 	return action;
@@ -621,7 +660,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	struct klist_iter iter;
 	conn_row_node* conn_row;
 
-	printk("0\n");
+	printk("localout\n");
 
 
 	if((iph->version != 4) || (iph->protocol != PROT_TCP) || rule_match(&loopback_rule, skb))
