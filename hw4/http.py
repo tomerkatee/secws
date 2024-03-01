@@ -22,8 +22,6 @@ def main():
     while True:
         client_socket, client_addr = mitm_http.accept()
 
-        print("client arrived")
-
         with open(path_to_mitm_attr, 'w+b') as mitm_attr:
             mitm_client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             mitm_client_socket.bind(('', 0))

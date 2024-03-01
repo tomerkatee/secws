@@ -27,6 +27,8 @@ typedef __be16 port_t;
 #define REASON_EXISTING_TCP_CONNECTION -7
 #define PORT_HTTP_SERVER 80
 #define PORT_FTP_SERVER 21
+#define IN_NET_IP_ADDR 50397450
+#define OUT_NET_IP_ADDR 50462986
 
 #define DEVICE_NAME_CONNS "conns"
 
@@ -581,6 +583,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	reason_t reason;
 	u_int8_t action = NO_DECISION;
 	int dest_port;
+	ip_t my_addr;
 
 	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -636,16 +639,13 @@ post_decision:
 		dest_port = tcph->dest;
 		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
 		{
-			printk("%d\n", ntohs(dest_port));
-			set_packet_fields(skb, iph->saddr, tcph->source, htonl(IP_ANY), htons(ntohs(dest_port)*10));
-			printk("%d\n", ntohs(tcph->dest));
-			printk("%d\n", ntohl(iph->daddr));
+			my_addr = strcmp(skb->dev->name, OUT_NET_DEVICE_NAME)==0 ? OUT_NET_IP_ADDR : IN_NET_IP_ADDR;
+			printk("%s\n", skb->dev->name);
+			printk("%d\n", my_addr);
+			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, htons(ntohs(dest_port)*10));
 		}
 		
 	}
-
-	///////////////////////////////////////////// delete this line
-	return NF_ACCEPT;
 
 	return action;
 }
