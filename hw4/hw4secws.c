@@ -582,8 +582,12 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	u_int8_t packet_prot = iph->protocol;
 	reason_t reason;
 	u_int8_t action = NO_DECISION;
-	int dest_port;
+	port_t src_port, dest_port;
 	ip_t my_addr;
+	struct klist_iter iter;
+	conn_row_node *conn_row;
+	
+
 
 	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -637,12 +641,27 @@ post_decision:
 	{
 		tcph = tcp_hdr(skb);
 		dest_port = tcph->dest;
+		src_port = tcph->source;
+
+		my_addr = strcmp(skb->dev->name, OUT_NET_DEVICE_NAME)==0 ? OUT_NET_IP_ADDR : IN_NET_IP_ADDR;
+
 		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
 		{
-			my_addr = strcmp(skb->dev->name, OUT_NET_DEVICE_NAME)==0 ? OUT_NET_IP_ADDR : IN_NET_IP_ADDR;
-			printk("%s\n", skb->dev->name);
-			printk("%d\n", my_addr);
 			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, htons(ntohs(dest_port)*10));
+		}
+		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER))
+		{
+			klist_iter_init(&conn_klist, &iter);
+			while(klist_next(&iter))
+			{
+				conn_row = cast_to_conn_row_node(iter.i_cur);
+				if(conn_row->conn.src_ip == iph->daddr && conn_row->conn.src_port == tcph->dest)
+				{
+					printk("sucked packet from server\n");
+					set_packet_fields(skb, iph->saddr, tcph->source, my_addr, conn_row->mitm_src_port);
+				}
+			}
+			klist_iter_exit(&iter);
 		}
 		
 	}
@@ -660,9 +679,6 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	struct klist_iter iter;
 	conn_row_node* conn_row;
 
-	printk("localout\n");
-
-
 	if((iph->version != 4) || (iph->protocol != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
@@ -670,14 +686,13 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 
 	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10))
 	{
-		printk("2\n");
 		klist_iter_init(&conn_klist, &iter);
 		while(klist_next(&iter))
 		{
 			conn_row = cast_to_conn_row_node(iter.i_cur);
 			if(conn_row->conn.dst_ip == iph->daddr && conn_row->conn.dst_port == tcph->dest)
 			{
-				printk("3\n");
+				printk("me sending to client\n");
 				correct_conn = &conn_row->conn;
 				set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 			}
@@ -686,12 +701,11 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	}
 	else
 	{
-		printk("4\n");
 		hash_for_each_possible(conn_hashtable, curr, hnode, tcph->source)
 		{
 			if(curr->conn_row->mitm_src_port == tcph->source)
 			{
-				printk("5\n");
+				printk("me sending to server\n");
 				correct_conn = &curr->conn_row->conn;
 				set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 			}
@@ -938,6 +952,7 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 		if(conn_row->conn.src_ip == client_ip && conn_row->conn.src_port == client_port)
 		{
 			conn_row->mitm_src_port = curr_mitm_port;
+			add_conn_row_to_conn_hash(conn_row, curr_mitm_port);
 			break;
 		}
 	}
