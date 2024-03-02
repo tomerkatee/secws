@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-import errno
 import struct
 import socket
-import sys
 from main import Rule, convert_to_little_end_port, convert_to_big_end_port, TwoDirectionalDict
-import base64
 import selectors
    
 
@@ -15,40 +12,6 @@ BUFFER_SIZE = 1024
 client_to_mitm_client = TwoDirectionalDict({})
 sock_to_send_buff = {}
 
-
-def send_until_blocking(send_socket, data):
-    try:
-        sent_cnt = send_socket.send(data)
-        
-    except socket.error as e:
-        err = e.args[0]
-        if err == errno.EAGAIN or err == errno.EWOULDBLOCK:
-            return sent_cnt
-        else:
-            # a "real" error occurred
-            print(e)
-            send_socket.close()
-            sys.exit(1)
-
-    return sent_cnt
-    
-    
-def recv_until_blocking(recv_socket):
-    data = None
-    try:
-        data = recv_socket.recv(BUFFER_SIZE)
-        
-    except socket.error as e:
-        err = e.args[0]
-        if err == errno.EAGAIN or err == errno.EWOULDBLOCK:
-            return data
-        else:
-            # a "real" error occurred
-            print(e)
-            recv_socket.close()
-            sys.exit(1)
-
-    return data
 
 
 def accept_and_register(sel, sock):
@@ -89,22 +52,21 @@ def accept_and_register(sel, sock):
 
 def main():
 
-    mitm_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    mitm_socket.setblocking(False)
-    mitm_socket.bind(('', 800))
-    mitm_socket.listen(10)
+    mitm_listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    mitm_listen_socket.setblocking(False)
+    mitm_listen_socket.bind(('', 800))
+    mitm_listen_socket.listen(10)
 
     sel = selectors.DefaultSelector()
-    sel.register(mitm_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
+    sel.register(mitm_listen_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
 
     
     while True:
-
         events = sel.select()
 
         for key, mask in events:
-            if key.fileobj == mitm_socket:
-                accept_and_register()
+            if key.fileobj == mitm_listen_socket:
+                accept_and_register(sel, mitm_listen_socket)
             
             else:
                 sock = key.fileobj
@@ -112,18 +74,21 @@ def main():
                 if mask & selectors.EVENT_READ:
                     data = sock.recv(BUFFER_SIZE)
 
-                    if data:
-                        print(data)
-                        res = client_to_mitm_client.get_key(sock)
-                        sibling = res if res != -1 else client_to_mitm_client.get_value(sock)
+                    res = client_to_mitm_client.get_key(sock)
+                    sibling = res if res != -1 else client_to_mitm_client.get_value(sock)
                 
+                    if data:
                         sock_to_send_buff[sibling] += data
+                    else:
+                        sel.unregister(sock)
+                        sock.close()
+                        sel.unregister(sibling)
+                        sibling.close()
 
                 elif mask & selectors.EVENT_WRITE:
-                    print("Sending: " + str(sock_to_send_buff[sock]))
                     sock.sendall(bytes(sock_to_send_buff[sock]))
-                
-
+                    sock_to_send_buff[sock] = bytearray()
+                    
 
 if __name__ == "__main__":
     main()
