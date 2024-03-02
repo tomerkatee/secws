@@ -23,6 +23,10 @@ class TwoDirectionalDict:
             return self.reverse_dict[value]
         except KeyError:
             return -1
+        
+    def add_pair(self, key, value):
+        self.forward_dict[key] = value
+        self.reverse_dict[value] = key
 
 
 path_to_rules_attr = "/sys/class/fw/rules/rules"
