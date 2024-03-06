@@ -410,6 +410,7 @@ static conn_row_node* add_conn_row(conn_t *conn, int initialState)
 
 	conn_row->conn = *conn;
 	conn_row->state = initialState;
+	conn_row->mitm_src_port = 0;
 	klist_add_tail(&conn_row->node, &conn_klist);
 	tail_conn = conn_row;
 	return conn_row;
@@ -974,6 +975,31 @@ ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *bu
 	return curr - buf;
 }
 
+ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	const char *curr = buf;
+	conn_row_node *conn_row;
+	conn_row_node *conn_inv_row;
+	conn_t conn, conn_inv;
+
+	COPY_TO_VAR_AND_ADVANCE(curr, conn.src_ip);
+	COPY_TO_VAR_AND_ADVANCE(curr, conn.dst_ip);
+	COPY_TO_VAR_AND_ADVANCE(curr, conn.src_port);
+	COPY_TO_VAR_AND_ADVANCE(curr, conn.dst_port);
+
+	conn_inv.src_ip = conn.dst_ip;
+	conn_inv.dst_ip = conn.src_ip;
+	conn_inv.src_port = conn.dst_port;
+	conn_inv.dst_port = conn.src_port;
+
+	conn_row = add_conn_row(&conn, TCP_CLOSE);
+	conn_inv_row = add_conn_row(&conn_inv, TCP_CLOSE);
+	add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
+	add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
+
+	return count;
+}
+
 // deletes all entries from hashtable and frees all kmalloc-ed memory
 void free_conn_hashtable(void)
 {
@@ -1037,6 +1063,7 @@ static DEVICE_ATTR(rules, S_IWUSR | S_IRUGO, display_rules, modify_rules);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, modify_reset);
 static DEVICE_ATTR(conns, S_IRUSR, display_conns, NULL);
 static DEVICE_ATTR(mitm, S_IWUSR | S_IRUGO, display_mitm, modify_mitm);
+static DEVICE_ATTR(add_conn, S_IWUSR, NULL, modify_add_conn);
 
 static int register_sysfs_chrdev(void)
 {
@@ -1073,9 +1100,13 @@ static int register_sysfs_chrdev(void)
 	if (device_create_file(conns_device, (const struct device_attribute *)&dev_attr_mitm.attr))
 		goto mitm_attr_create_failed;
 
+	if (device_create_file(conns_device, (const struct device_attribute *)&dev_attr_add_conn.attr))
+		goto add_conn_attr_create_failed;
+
 	return 0;
 
 	// error handling
+add_conn_attr_create_failed:
 mitm_attr_create_failed:
 conns_attr_create_failed:
 	device_destroy(sysfs_class, MKDEV(major_number, MINOR_CONNS));

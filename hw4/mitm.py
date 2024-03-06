@@ -10,6 +10,8 @@ mitm_get_server_format = "<I H"
 BUFFER_SIZE = 1024
 
 
+
+
 class MITMInspector():
     def __init__(self):
         self.mitm_listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -51,10 +53,10 @@ class MITMInspector():
         self.sel.register(client_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
         self.sel.register(mitm_client_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
         
-    def inspect_from_server(self, data):
+    def inspect_from_server(self, data, sock):
         return True
     
-    def inspect_from_client(self, data):
+    def inspect_from_client(self, data, sock):
         return True
 
     def start_mitm(self):
@@ -80,24 +82,26 @@ class MITMInspector():
                         data = sock.recv(BUFFER_SIZE)
 
                         res = self.client_to_mitm_client.get_key(sock)
-                        sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
                     
                         if data:
-                            inspection_ok = self.inspect_from_server(data) if res != -1 else self.inspect_from_client(data)
+                            inspection_ok = self.inspect_from_server(data, sock) if res != -1 else self.inspect_from_client(data, sock)
                             if(inspection_ok):
+                                sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
+
                                 self.sock_to_send_buff[sibling] += data
                         else:
                             self.sel.unregister(sock)
                             sock.close()
-                            self.sel.unregister(sibling)
-                            if len(self.sock_to_send_buff[sibling]) == 0:
-                                sibling.close()
 
                     elif mask & selectors.EVENT_WRITE:
-                        sock.sendall(bytes(self.sock_to_send_buff[sock]))
-                        self.sock_to_send_buff[sock] = bytearray()
-
-                        if not self.sel.get_key(sock):
+                        try:
+                            sock.sendall(bytes(self.sock_to_send_buff[sock]))
+                            self.sock_to_send_buff[sock] = bytearray()
+                        except:
+                            self.sel.unregister(sock)
                             sock.close()
+
+
+
 
     
