@@ -6,7 +6,7 @@ import sys
 
 def signal_handler(sig, frame):
     print("\nCtrl+C detected. Cleaning up...")
-    http_inspector.mitm_listen_socket.close()
+    http_inspector.keep_running = False
     sys.exit(0)
     
 
@@ -19,10 +19,13 @@ http_inspector = None
 
 
 class HTTPInspector(mitm.MITMInspector):
+    def __init__(self):
+        super().__init__(800)
+
     def inspect_from_server(self, data, sock):
         global data_buffer
 
-        if(not super().inspect_from_server(data)):
+        if(not super().inspect_from_server(data, sock)):
             return False
 
 

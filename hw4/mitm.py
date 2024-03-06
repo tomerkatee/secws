@@ -13,15 +13,19 @@ BUFFER_SIZE = 1024
 
 
 class MITMInspector():
-    def __init__(self):
+    def __init__(self, port):
         self.mitm_listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.mitm_listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sel = selectors.DefaultSelector()
         self.client_to_mitm_client = TwoDirectionalDict({})
         self.sock_to_send_buff = {}
-        
+        self.listen_port = port        
+        self.sockets = [self.mitm_listen_socket]
+        self.keep_running = True
 
     def accept_and_register(self):
         client_socket, client_addr = self.mitm_listen_socket.accept()
+        self.sockets.append(client_socket)
 
         with open(path_to_mitm_attr, 'wb') as mitm_attr:
             mitm_client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -36,7 +40,7 @@ class MITMInspector():
 
         with open(path_to_mitm_attr, 'rb') as mitm_attr:
 
-            data = mitm_attr.read(struct.calcsize(mitm_get_server_format)+5)
+            data = mitm_attr.read(struct.calcsize(mitm_get_server_format))
 
             server_addr_unformatted = struct.unpack(mitm_get_server_format, data)
 
@@ -44,6 +48,7 @@ class MITMInspector():
             server_port = convert_to_little_end_port(server_addr_unformatted[1])
 
         mitm_client_socket.connect((server_ip, server_port))
+        self.sockets.append(mitm_client_socket)
 
         client_socket.setblocking(False)
         mitm_client_socket.setblocking(False)
@@ -62,13 +67,14 @@ class MITMInspector():
     def start_mitm(self):
 
         self.mitm_listen_socket.setblocking(False)
-        self.mitm_listen_socket.bind(('', 800))
+        self.mitm_listen_socket.bind(('', self.listen_port))
         self.mitm_listen_socket.listen(10)
 
         self.sel.register(self.mitm_listen_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
 
+    
         
-        while True:
+        while self.keep_running:
             events = self.sel.select()
 
             for key, mask in events:
@@ -92,6 +98,7 @@ class MITMInspector():
                         else:
                             self.sel.unregister(sock)
                             sock.close()
+                            self.sockets.remove(sock)
 
                     elif mask & selectors.EVENT_WRITE:
                         try:
@@ -100,8 +107,15 @@ class MITMInspector():
                         except:
                             self.sel.unregister(sock)
                             sock.close()
+                            self.sockets.remove(sock)
+
+        self.sel.close()
+        self.close_sockets()
 
 
-
+    def close_sockets(self):
+        print("closing sockets")
+        for sock in self.sockets:
+            sock.close()
 
     

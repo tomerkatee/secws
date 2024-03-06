@@ -27,6 +27,7 @@ typedef __be16 port_t;
 #define REASON_EXISTING_TCP_CONNECTION -7
 #define PORT_HTTP_SERVER 80
 #define PORT_FTP_SERVER 21
+#define PORT_FTP_DATA_CONNECTION_SERVER 20
 #define IN_NET_IP_ADDR 50397450
 #define OUT_NET_IP_ADDR 50462986
 
@@ -504,7 +505,11 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	// ACK = 0
 	if(tcp_header->syn)
 	{
-		if(!conn_row && !conn_inv_row)
+		if(tcp_header->source == htons(PORT_FTP_DATA_CONNECTION_SERVER) && !conn_row)
+		{
+			return NF_DROP;
+		}
+		else if(!conn_row && !conn_inv_row)
 		{
 			conn_row = add_conn_row(&skb_conn, TCP_CLOSE);
 			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
@@ -558,20 +563,6 @@ static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port,
 	tcph->check = 0;
 	tcph->check = tcp_v4_check(tcp_len, iph->saddr, iph->daddr, csum_partial((char *)tcph, tcp_len, 0));
 
-	
-/* 	
-
-
-
-	
-	tcp_len = skb->len - (iph->ihl<<2);
-	tcph->check = 0; // critical for checksum correctness
-	tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr, tcp_len, iph->protocol, csum_partial((char *)tcph, tcp_len, 0));
-
-	skb->ip_summed = CHECKSUM_UNNECESSARY;
-
-	iph->check = 0; // critical for checksum correctness
-	iph->check = ip_fast_csum(iph, iph->ihl); */
 }
 
 static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
@@ -595,7 +586,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 
 	if(packet_prot == PROT_TCP)
 	{
-		if(tcp_hdr(skb)->ack || tcp_hdr(skb)->source == htons(20)) // src_port = 20 represents an ftp data connection from the server
+		if(tcp_hdr(skb)->ack || tcp_hdr(skb)->source == htons(PORT_FTP_DATA_CONNECTION_SERVER))
 		{
 			action = handle_by_conn_tab(skb);
 			reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : REASON_EXISTING_TCP_CONNECTION;
@@ -986,6 +977,9 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.dst_ip);
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.src_port);
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.dst_port);
+
+	if(search_conn_table_by_conn(&conn))
+		return count;
 
 	conn_inv.src_ip = conn.dst_ip;
 	conn_inv.dst_ip = conn.src_ip;
