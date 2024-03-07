@@ -23,6 +23,7 @@
         "tcp_states.h": "c",
         "tcp.h": "c",
         "string": "c",
-        "fw.h": "c"
+        "fw.h": "c",
+        "timer.h": "c"
     }
 }

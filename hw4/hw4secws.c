@@ -7,6 +7,7 @@
 #include <linux/hashtable.h>
 #include <net/tcp_states.h>
 #include <net/tcp.h>
+#include <linux/timer.h>
 
 
 MODULE_LICENSE("GPL");
@@ -30,6 +31,7 @@ typedef __be16 port_t;
 #define PORT_FTP_DATA_CONNECTION_SERVER 20
 #define IN_NET_IP_ADDR 50397450
 #define OUT_NET_IP_ADDR 50462986
+#define TIMEOUT_TIMERS_COUNT 8
 
 #define DEVICE_NAME_CONNS "conns"
 
@@ -78,6 +80,11 @@ typedef struct {
 	struct hlist_node hnode;
 } conn_row_p_node;
 
+typedef struct {
+	struct timer_list timer;
+	conn_row_node* conn_row;
+} timeout_timer;
+
 
 static struct nf_hook_ops nfho_prert;
 static struct nf_hook_ops nfho_localout;
@@ -94,6 +101,7 @@ static struct device* log_device = NULL;
 static struct device* conns_device = NULL;
 static log_iter read_log_iter;
 static port_t curr_mitm_port;
+static timeout_timer timeout_timers[TIMEOUT_TIMERS_COUNT];
 
 // the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
 DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
@@ -432,6 +440,15 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 }
 
 
+void timeout_handler(struct timer_list *timer)
+{
+    timeout_timer *timeout = from_timer(timeout, timer, timer);
+	
+
+	
+    printk(KERN_INFO "Timeout occurred! Additional info: %d\n", data->additional_info);
+}
+
 //TODO: think about acks are they mandatory to write here?
 
 // decides what to do with the packet by the connection row in the table, and also updates if needed
@@ -439,6 +456,7 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 {
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
+	int i;
 
 	if(ip_header->daddr == conn_row->conn.src_ip)
 		return NF_ACCEPT;
@@ -475,10 +493,32 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 
 		case TCP_ESTABLISHED:
 			if(tcp_header->ack)
-				conn_row->state = tcp_header->fin ? TCP_CLOSE : TCP_ESTABLISHED;
+			{
+				if(tcp_header->fin)
+				{
+					conn_row->state = TCP_FIN_WAIT1;
+					for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
+					{
+						if(!timer_pending(&timeout_timers[i].timer))
+						{
+							mod_time
+							break;
+						}
+					}
+					conn_row->state = TCP_CLOSE;
+				}	
+				else
+				{
+					conn_row->state = TCP_ESTABLISHED;
+				}
+			}
 			else
 				return NF_DROP;
 			break;	
+
+		case TCP_FIN_WAIT1:
+			
+		
 	}
 	return NF_ACCEPT;
 
@@ -1121,9 +1161,16 @@ register_chrdev_failed:
 
 
 static int __init my_module_init_function(void) {
+	int i;
 	klist_init(&log_klist, NULL, NULL);
 	klist_init(&conn_klist, NULL, NULL);
 	hash_init(conn_hashtable);
+
+	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
+	{
+		timer_setup(&timeout_timers[i].timer, )
+	}
+	
 
 	nfho_prert.hook = (nf_hookfn*)prert_hook_function;
     nfho_prert.hooknum = NF_INET_PRE_ROUTING;
