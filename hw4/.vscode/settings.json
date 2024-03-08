@@ -24,6 +24,7 @@
         "tcp.h": "c",
         "string": "c",
         "fw.h": "c",
-        "timer.h": "c"
+        "timer.h": "c",
+        "mutex.h": "c"
     }
 }

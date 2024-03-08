@@ -8,6 +8,8 @@
 #include <net/tcp_states.h>
 #include <net/tcp.h>
 #include <linux/timer.h>
+#include <linux/mutex.h>
+
 
 
 MODULE_LICENSE("GPL");
@@ -32,7 +34,7 @@ typedef __be16 port_t;
 #define IN_NET_IP_ADDR 50397450
 #define OUT_NET_IP_ADDR 50462986
 #define TIMEOUT_TIMERS_COUNT 8
-
+#define TIMEOUT_MILISECONDS 10000
 #define DEVICE_NAME_CONNS "conns"
 
 #define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
@@ -71,7 +73,7 @@ typedef struct{
 typedef struct {
 	conn_t conn;	
 	int state;
-	int mitm_src_port;
+	port_t mitm_src_port;
 	struct klist_node node;
 } conn_row_node;
 
@@ -105,6 +107,8 @@ static timeout_timer timeout_timers[TIMEOUT_TIMERS_COUNT];
 
 // the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
 DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
+
+static DEFINE_MUTEX(conn_tab_mutex);
 
 
 static rule_t loopback_rule = {
@@ -392,8 +396,8 @@ static int hash_src(ip_t src_ip, port_t src_port)
 {
 	return src_ip + src_port;
 }
-
- static conn_row_node* search_conn_table_by_src(ip_t src_ip, port_t src_port)
+*/
+ static conn_row_node* search_conn_table_by_dst(ip_t src_ip, port_t src_port)
 {
 	conn_row_p_node* curr;
 
@@ -404,9 +408,34 @@ static int hash_src(ip_t src_ip, port_t src_port)
 	}
 
 	return NULL;
-} */
+}
 
+static conn_row_node* del_conn_row(conn_row_node *conn_row)
+{
+	conn_row_p_node* conn_row_p;
+	if((conn_row_p = search_conn_table_by_conn(&conn_row->conn)))
+	{
+		hash_del(&conn_row_p->hnode);
+		kfree(conn_row_p);
+	}
+	if((conn_row_p = search_conn_table_by_mitm_port(conn_row->mitm_src_port)))
+	{
+		hash_del(&conn_row_p->hnode);
+		kfree(conn_row_p);
+	}
+		if((conn_row_p = search_conn_table_by_conn(conn)))
+	{
+		hash_del(&conn_row_p->hnode);
+		kfree(conn_row_p);
+	}
 
+	conn_row->conn = *conn;
+	conn_row->state = initialState;
+	conn_row->mitm_src_port = 0;
+	klist_add_tail(&conn_row->node, &conn_klist);
+	tail_conn = conn_row;
+	return conn_row;
+}
 
 
 static conn_row_node* add_conn_row(conn_t *conn, int initialState)
@@ -440,13 +469,14 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 }
 
 
+//think about concurency
 void timeout_handler(struct timer_list *timer)
 {
     timeout_timer *timeout = from_timer(timeout, timer, timer);
 	
-
+	timeout->conn_row->state = TCP_CLOSE;
 	
-    printk(KERN_INFO "Timeout occurred! Additional info: %d\n", data->additional_info);
+    printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
 }
 
 //TODO: think about acks are they mandatory to write here?
@@ -501,10 +531,11 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 					{
 						if(!timer_pending(&timeout_timers[i].timer))
 						{
-							mod_time
+							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));
 							break;
 						}
 					}
+
 					conn_row->state = TCP_CLOSE;
 				}	
 				else
@@ -517,6 +548,12 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 			break;	
 
 		case TCP_FIN_WAIT1:
+			if(tcp_header->ack)
+				conn_row->state = TCP_TIME_WAIT;
+			else
+				return NF_DROP;
+			break;
+		
 			
 		
 	}
@@ -531,15 +568,20 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	conn_t skb_conn = { .src_ip = ip_header->saddr, .src_port = tcp_header->source, .dst_ip = ip_header->daddr, .dst_port = tcp_header->dest };
 	conn_t skb_conn_inv = { .src_ip = ip_header->daddr, .src_port = tcp_header->dest, .dst_ip = ip_header->saddr, .dst_port = tcp_header->source };
 	conn_row_node *conn_row, *conn_inv_row;
+	int result = NF_DROP;
+
+	mutex_lock(&conn_tab_mutex);
+
 	conn_row = search_conn_table_by_conn(&skb_conn);
 	conn_inv_row = search_conn_table_by_conn(&skb_conn_inv);
 
 	if(tcp_header->ack)
 	{
 		if(conn_row || conn_inv_row)
-			return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
-		else 
-			return NF_DROP;
+		{
+			result = handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
+			goto post_result;
+		}
 	}
 		
 	// ACK = 0
@@ -547,20 +589,25 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	{
 		if(tcp_header->source == htons(PORT_FTP_DATA_CONNECTION_SERVER) && !conn_row)
 		{
-			return NF_DROP;
+			result = NF_DROP;
+			goto post_result;
 		}
-		else if(!conn_row && !conn_inv_row)
+
+		if(!conn_row && !conn_inv_row)
 		{
 			conn_row = add_conn_row(&skb_conn, TCP_CLOSE);
 			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
 			add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
 			add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
-
 		}	
-		return handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
+		result = handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
+		if(conn_row->state == TCP_CLOS)
+		goto post_result;
 	}
 
-	return NF_DROP;
+post_result:
+	mutex_unlock(&conn_tab_mutex);
+	return result;
 }
 
 static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port, ip_t dst_ip, port_t dst_port)
@@ -733,14 +780,11 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	}
 	else
 	{
-		hash_for_each_possible(conn_hashtable, curr, hnode, tcph->source)
+		if((conn_row = search_conn_table_by_mitm_port(tcph->source)))
 		{
-			if(curr->conn_row->mitm_src_port == tcph->source)
-			{
-				printk("me sending to server\n");
-				correct_conn = &curr->conn_row->conn;
-				set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
-			}
+			printk("me sending to server\n");
+			correct_conn = &curr->conn_row->conn;
+			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
 	}
 
@@ -1030,6 +1074,8 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	conn_inv_row = add_conn_row(&conn_inv, TCP_CLOSE);
 	add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
 	add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
+	add_conn_row_to_conn_hash(conn_row, conn_row->conn.dst_ip + conn_row->conn.dst_port);
+	add_conn_row_to_conn_hash(conn_inv_row, conn_inv_row->conn.dst_ip + conn_inv_row->conn.dst_port);
 
 	return count;
 }
@@ -1168,9 +1214,8 @@ static int __init my_module_init_function(void) {
 
 	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 	{
-		timer_setup(&timeout_timers[i].timer, )
+		timer_setup(&timeout_timers[i].timer, timeout_handler, 0);
 	}
-	
 
 	nfho_prert.hook = (nf_hookfn*)prert_hook_function;
     nfho_prert.hooknum = NF_INET_PRE_ROUTING;
