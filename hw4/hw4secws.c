@@ -85,7 +85,6 @@ typedef struct {
 typedef struct {
 	struct timer_list timer;
 	conn_row_node* conn_row;
-	int delete;
 } timeout_timer;
 
 
@@ -491,7 +490,6 @@ void timeout_handler(struct timer_list *timer)
 	//del_conn_row(timeout->conn_row);
     //printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
 	printk("reached timer\n");
-	timeout->delete = 1;
 
 	//mutex_unlock(&conn_tab_mutex);
 }
@@ -503,7 +501,7 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 	//struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 	int i;
-	timeout_timer curr;
+	timeout_timer *curr;
 
 /* 	if(ip_header->daddr == conn_row->conn.src_ip)
 	{
@@ -573,14 +571,13 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 					conn_row->state = TCP_FIN_WAIT1;
 					for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 					{
-						curr = timeout_timers[i];
-						if(!timer_pending(&curr.timer))
+						curr = &timeout_timers[i];
+						if(!timer_pending(&curr->timer))
 						{
-							if(curr.delete)
-								del_conn_row(curr.conn_row);
+							if(curr->conn_row)
+								del_conn_row(curr->conn_row);
 
-							curr.delete = 0;
-							curr.conn_row = conn_row;
+							curr->conn_row = conn_row;
 							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));	
 							break;
 						}
@@ -617,7 +614,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	conn_row_node *conn_row_sender, *conn_row_receiver;
 	int result = NF_DROP;
 	int i;
-	timeout_timer curr;
+	//timeout_timer *curr;
 
 	mutex_lock(&conn_tab_mutex);
 
@@ -667,18 +664,22 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	}
 
 post_result:
-	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
+/* 	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 	{
-		curr = timeout_timers[i];
-		if(!timer_pending(&curr.timer))
+		printk("%d\n", i);
+		curr = &timeout_timers[i];
+		if(!timer_pending(&curr->timer))
 		{
-			if(curr.delete)
-				del_conn_row(curr.conn_row);
+			printk("%d not pending\n", i);
+			if(curr->conn_row)
+			{
+				printk("deleting\n");
+				//del_conn_row(curr->conn_row);
+			}
 
-			curr.delete = 0;
-			break;
+			curr->conn_row = NULL;
 		}
-	}
+	} */
 
 	mutex_unlock(&conn_tab_mutex);
 	return result;
@@ -1295,6 +1296,7 @@ static int __init my_module_init_function(void) {
 	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 	{
 		timer_setup(&timeout_timers[i].timer, timeout_handler, 0);
+		timeout_timers[i].conn_row = NULL;
 	}
 
 	nfho_prert.hook = (nf_hookfn*)prert_hook_function;
