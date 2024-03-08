@@ -39,7 +39,7 @@ class MITMInspector():
             mitm_attr.write(struct.pack(mitm_update_format, client_ip, client_port, mitm_port))
 
         with open(path_to_mitm_attr, 'rb') as mitm_attr:
-
+            
             data = mitm_attr.read(struct.calcsize(mitm_get_server_format))
 
             server_addr_unformatted = struct.unpack(mitm_get_server_format, data)

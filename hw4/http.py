@@ -28,6 +28,7 @@ class HTTPInspector(mitm.MITMInspector):
         if(not super().inspect_from_server(data, sock)):
             return False
 
+        print(data.decode('utf-8'))
 
         # convert base64 encoded bytes to actual data text
         #data_str = base64.b64decode(data+b'==').decode('utf-8')
@@ -35,7 +36,7 @@ class HTTPInspector(mitm.MITMInspector):
         data_buffer += data.decode('utf-8')
         data_buffer = data_buffer[-data_buffer_max_len:]
 
-        return "Content-Type: text/csv" in data_buffer or "Content-Type: application/zip" in data_buffer
+        return not ("Content-Type: text/csv" in data_buffer or "Content-Type: application/zip" in data_buffer)
 
 
 def main():

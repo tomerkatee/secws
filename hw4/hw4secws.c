@@ -589,7 +589,10 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 				conn_row->state = TCP_TIME_WAIT;
 			else
 				return NF_DROP;
-			break;			
+			break;
+		
+		case TCP_TIME_WAIT:
+			return NF_DROP;
 	}
 	return NF_ACCEPT;
 
@@ -643,12 +646,9 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 
 		}	
 		result = handle_packet_by_conn_row(skb, conn_row_sender);
-		// && handle_packet_by_conn_row(skb, conn_row_receiver);
 
-/* 		if(conn_row_sender->state == TCP_CLOSE)
+/*  		if(conn_row_sender->state == TCP_CLOSE)
 			del_conn_row(conn_row_sender); */
-/* 		if(conn_row_receiver->state == TCP_CLOSE)
-			del_conn_row(conn_row_receiver); */
 		
 		goto post_result;
 	}
@@ -728,6 +728,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	ip_t my_addr;
 	//struct klist_iter iter;
 	conn_row_node *conn_row;
+	conn_t skb_conn_inverse;
 	
 
 
@@ -793,29 +794,21 @@ post_decision:
 		}
 		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER))
 		{
-			conn_row = search_conn_table_by_mitm_port(dest_port);
-			if(conn_row == NULL)
-			{
-				printk("packet received from server without mitm entry");
-			}
-			else if(conn_row->conn.src_ip == iph->daddr)
+			printk("received packet from server\n");
+			skb_conn_inverse.src_ip = iph->daddr;
+			skb_conn_inverse.dst_ip = iph->saddr;
+			skb_conn_inverse.src_port = tcph->dest;
+			skb_conn_inverse.dst_port = tcph->source;
+			mutex_lock(&conn_tab_mutex);
+			conn_row = search_conn_table_by_conn(&skb_conn_inverse);
+			mutex_unlock(&conn_tab_mutex);
+
+
+			if(conn_row)
 			{
 				printk("sucked packet from server\n");
 				set_packet_fields(skb, iph->saddr, tcph->source, my_addr, conn_row->mitm_src_port);
 			}
-
-/* 
-			klist_iter_init(&conn_klist, &iter);
-			while(klist_next(&iter))
-			{
-				conn_row = cast_to_conn_row_node(iter.i_cur);
-				if(conn_row->conn.src_ip == iph->daddr && conn_row->conn.src_port == tcph->dest)
-				{
-					printk("sucked packet from server\n");
-					set_packet_fields(skb, iph->saddr, tcph->source, my_addr, conn_row->mitm_src_port);
-				}
-			}
-			klist_iter_exit(&iter); */
 		}
 	}
 
@@ -841,6 +834,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 
 	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10))
 	{
+		printk("trying to send to client\n");
 		if((conn_row = search_conn_table_by_dst(iph->daddr, tcph->dest)))
 		{
 			printk("me sending to client\n");
@@ -848,14 +842,11 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
 	}
-	else
+	else if ((conn_row = search_conn_table_by_mitm_port(tcph->source)))
 	{
-		if((conn_row = search_conn_table_by_mitm_port(tcph->source)))
-		{
-			printk("me sending to server\n");
-			correct_conn = &conn_row->conn;
-			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
-		}
+		printk("me sending to server\n");
+		correct_conn = &conn_row->conn;
+		set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 	}
 
 	mutex_unlock(&conn_tab_mutex);
@@ -1101,12 +1092,13 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 		conn_row = cast_to_conn_row_node(iter.i_cur);
 		if(conn_row->conn.src_ip == client_ip && conn_row->conn.src_port == client_port)
 		{
+			printk("added port: %d as mitm port\n", curr_mitm_port);
 			conn_row->mitm_src_port = curr_mitm_port;
 			add_conn_row_to_conn_hash(conn_row, curr_mitm_port);
-			break;
 		}
 	}
 	klist_iter_exit(&iter);
+	printk("modify mitm done\n");
 
 	mutex_unlock(&conn_tab_mutex);
 	return count;
@@ -1117,10 +1109,22 @@ ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *bu
 	char *curr = buf;
 	conn_row_node *conn_row;
 
+	mutex_lock(&conn_tab_mutex);
+
 	conn_row = search_conn_table_by_mitm_port(curr_mitm_port);
+	if(conn_row)
+	{
+		printk("display_mitm found: %d %d\n", conn_row->conn.dst_ip, conn_row->conn.dst_port);
+	}
+	else
+	{
+		printk("display_mitm not found\n");
+	}
 
 	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_ip);
 	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_port);
+
+	mutex_unlock(&conn_tab_mutex);
 
 	return curr - buf;
 }
