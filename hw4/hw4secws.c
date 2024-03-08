@@ -412,11 +412,13 @@ static void del_conn_row(conn_row_node *conn_row_del)
 	conn_row_node *conn_row;
 	conn_row_node *prev = NULL;
 
+
 	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(&conn_row_del->conn))
 	{
 		if(conn_eq(&curr->conn_row->conn, &conn_row_del->conn))
 			hash_del(&curr->hnode);
 	}
+
 
 	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row_del->mitm_src_port)
 	{
@@ -430,12 +432,14 @@ static void del_conn_row(conn_row_node *conn_row_del)
 			hash_del(&curr->hnode);
 	}
 
+
 	klist_iter_init(&conn_klist, &iter);
 	while(klist_next(&iter))
 	{
 		conn_row = cast_to_conn_row_node(iter.i_cur);
 		if(conn_eq(&conn_row->conn, &conn_row_del->conn))
 		{
+			printk("deleting found\n");
 			if(tail_conn == conn_row)
 			{
 				tail_conn = prev;
@@ -447,6 +451,8 @@ static void del_conn_row(conn_row_node *conn_row_del)
 		prev = conn_row;
 	}
 	klist_iter_exit(&iter);
+	printk("deleting done\n");
+
 }
 
 
@@ -498,29 +504,9 @@ void timeout_handler(struct timer_list *timer)
 // decides what to do with the packet by the connection row in the table, and also updates if needed
 static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_row)
 {
-	//struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 	int i;
 	timeout_timer *curr;
-
-/* 	if(ip_header->daddr == conn_row->conn.src_ip)
-	{
-		if(conn_row->state == TCP_CLOSE || conn_row->state == TCP_LISTEN)	// allow only syn packets to be sent to a listening socket
-		{
-			if(tcp_header->syn && !tcp_header->ack)
-			{
-				printk("hey\n");
-				conn_row->state = TCP_LISTEN;
-			}
-			else
-			{
-				printk("wasap\n");
-				return NF_DROP;
-			}
-		}
-
-		return NF_ACCEPT;
-	} */
 
 	switch (conn_row->state)
 	{
@@ -575,7 +561,11 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 						if(!timer_pending(&curr->timer))
 						{
 							if(curr->conn_row)
+							{
+								printk("deleting %d from state machine\n", i);
 								del_conn_row(curr->conn_row);
+
+							}
 
 							curr->conn_row = conn_row;
 							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));	
@@ -614,7 +604,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	conn_row_node *conn_row_sender, *conn_row_receiver;
 	int result = NF_DROP;
 	int i;
-	//timeout_timer *curr;
+	timeout_timer *curr;
 
 	mutex_lock(&conn_tab_mutex);
 
@@ -664,22 +654,20 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	}
 
 post_result:
-/* 	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
+ 	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 	{
-		printk("%d\n", i);
 		curr = &timeout_timers[i];
 		if(!timer_pending(&curr->timer))
 		{
-			printk("%d not pending\n", i);
 			if(curr->conn_row)
 			{
-				printk("deleting\n");
-				//del_conn_row(curr->conn_row);
+				printk("deleting %d\n", i);
+				del_conn_row(curr->conn_row);
 			}
 
 			curr->conn_row = NULL;
 		}
-	} */
+	} 
 
 	mutex_unlock(&conn_tab_mutex);
 	return result;
@@ -837,7 +825,6 @@ post_decision:
 
 static int localout_hook_function(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
 {
-	conn_row_p_node* curr;
 	conn_t *correct_conn;
 	struct tcphdr* tcph;
 	struct iphdr* iph = ip_hdr(skb);
@@ -866,7 +853,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 		if((conn_row = search_conn_table_by_mitm_port(tcph->source)))
 		{
 			printk("me sending to server\n");
-			correct_conn = &curr->conn_row->conn;
+			correct_conn = &conn_row->conn;
 			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
 	}
