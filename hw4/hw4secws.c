@@ -379,7 +379,7 @@ static conn_row_node* search_conn_table_by_conn(conn_t *conn)
 }
 
 
-static conn_row_p_node* search_conn_table_by_mitm_port(port_t mitm_port)
+static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
 {
 	conn_row_p_node* curr;
 
@@ -409,8 +409,8 @@ static void del_conn_row(conn_row_node *conn_row_del)
 {
 	conn_row_p_node* curr;
 	struct klist_iter iter;
-	conn_row_node conn_row;
-	conn_row_node prev = NULL;
+	conn_row_node *conn_row;
+	conn_row_node *prev = NULL;
 
 	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(&conn_row_del->conn))
 	{
@@ -484,9 +484,10 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 //think about concurency
 void timeout_handler(struct timer_list *timer)
 {
+	timeout_timer *timeout;
 	mutex_lock(&conn_tab_mutex);
 	
-    timeout_timer *timeout = from_timer(timeout, timer, timer);
+    timeout = from_timer(timeout, timer, timer);
 	del_conn_row(timeout->conn_row);
     printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
 
@@ -614,8 +615,8 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 		result = handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
 		if(conn_row->state == TCP_CLOSE)
 			del_conn_row(conn_row);
-		if(conn_row_inv->state == TCP_CLOSE)
-			del_conn_row(conn_row);
+		if(conn_inv_row->state == TCP_CLOSE)
+			del_conn_row(conn_inv_row);
 		goto post_result;
 	}
 
@@ -769,7 +770,6 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	conn_t *correct_conn;
 	struct tcphdr* tcph;
 	struct iphdr* iph = ip_hdr(skb);
-	struct klist_iter iter;
 	conn_row_node* conn_row;
 
 	if((iph->version != 4) || (iph->protocol != PROT_TCP) || rule_match(&loopback_rule, skb))
