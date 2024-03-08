@@ -35,10 +35,6 @@ class FTPInspector(mitm.MITMInspector):
 
         if(not super().inspect_from_client(data, sock)):
             return False
-            
-
-        # convert base64 encoded bytes to actual data text
-        #data_str = base64.b64decode(data+b'==').decode('utf-8')
 
         data_buffer += data.decode('utf-8')
         data_buffer = data_buffer[-data_buffer_max_len:]
@@ -66,6 +62,7 @@ class FTPInspector(mitm.MITMInspector):
                 print(client_ip_str + ": " + str(client_port_little))
 
                 add_conn_attr.write(struct.pack(add_conn_format, client_ip, server_ip, client_port, server_port))
+                data_buffer = ""
 
         else:
             print("no match!")

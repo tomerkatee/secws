@@ -490,14 +490,14 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 void timeout_handler(struct timer_list *timer)
 {
 	timeout_timer *timeout;
-	//mutex_lock(&conn_tab_mutex);
+	////mutex_lock(&conn_tab_mutex);
 	
 	timeout = from_timer(timeout, timer, timer);
 	//del_conn_row(timeout->conn_row);
     //printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
 	printk("reached timer\n");
 
-	//mutex_unlock(&conn_tab_mutex);
+	////mutex_unlock(&conn_tab_mutex);
 }
 
 
@@ -554,6 +554,8 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 			{
 				if(tcp_header->fin)
 				{
+					printk("sending fin\n");
+
 					conn_row->state = TCP_FIN_WAIT1;
 					for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 					{
@@ -608,8 +610,9 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	int result = NF_DROP;
 	int i;
 	timeout_timer *curr;
+	
 
-	mutex_lock(&conn_tab_mutex);
+	//mutex_lock(&conn_tab_mutex);
 
 	conn_row_sender = search_conn_table_by_conn(&skb_conn_sender);
 
@@ -669,7 +672,7 @@ post_result:
 		}
 	} 
 
-	mutex_unlock(&conn_tab_mutex);
+	//mutex_unlock(&conn_tab_mutex);
 	return result;
 }
 
@@ -726,7 +729,6 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	u_int8_t action = NO_DECISION;
 	port_t src_port, dest_port;
 	ip_t my_addr;
-	//struct klist_iter iter;
 	conn_row_node *conn_row;
 	conn_t skb_conn_inverse;
 	
@@ -799,9 +801,9 @@ post_decision:
 			skb_conn_inverse.dst_ip = iph->saddr;
 			skb_conn_inverse.src_port = tcph->dest;
 			skb_conn_inverse.dst_port = tcph->source;
-			mutex_lock(&conn_tab_mutex);
+			//mutex_lock(&conn_tab_mutex);
 			conn_row = search_conn_table_by_conn(&skb_conn_inverse);
-			mutex_unlock(&conn_tab_mutex);
+			//mutex_unlock(&conn_tab_mutex);
 
 
 			if(conn_row)
@@ -823,7 +825,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	struct iphdr* iph = ip_hdr(skb);
 	conn_row_node* conn_row;
 	
-	mutex_lock(&conn_tab_mutex);
+	//mutex_lock(&conn_tab_mutex);
 
 	printk("localout hook\n");
 
@@ -849,7 +851,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 		set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 	}
 
-	mutex_unlock(&conn_tab_mutex);
+	//mutex_unlock(&conn_tab_mutex);
 
 	return NF_ACCEPT;
 }
@@ -1080,7 +1082,7 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 	struct klist_iter iter;
 	conn_row_node *conn_row;
 
-	mutex_lock(&conn_tab_mutex);
+	//mutex_lock(&conn_tab_mutex);
 
 	COPY_TO_VAR_AND_ADVANCE(curr, client_ip);
 	COPY_TO_VAR_AND_ADVANCE(curr, client_port);
@@ -1100,7 +1102,7 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 	klist_iter_exit(&iter);
 	printk("modify mitm done\n");
 
-	mutex_unlock(&conn_tab_mutex);
+	//mutex_unlock(&conn_tab_mutex);
 	return count;
 }
 
@@ -1109,7 +1111,7 @@ ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *bu
 	char *curr = buf;
 	conn_row_node *conn_row;
 
-	mutex_lock(&conn_tab_mutex);
+	//mutex_lock(&conn_tab_mutex);
 
 	conn_row = search_conn_table_by_mitm_port(curr_mitm_port);
 	if(conn_row)
@@ -1124,7 +1126,7 @@ ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *bu
 	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_ip);
 	COPY_FROM_VAR_AND_ADVANCE(curr, conn_row->conn.dst_port);
 
-	mutex_unlock(&conn_tab_mutex);
+	//mutex_unlock(&conn_tab_mutex);
 
 	return curr - buf;
 }
@@ -1136,7 +1138,7 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	conn_row_node *conn_inv_row;
 	conn_t conn, conn_inv;
 
-	mutex_lock(&conn_tab_mutex);
+	//mutex_lock(&conn_tab_mutex);
 
 
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.src_ip);
@@ -1152,13 +1154,13 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	conn_inv.src_port = conn.dst_port;
 	conn_inv.dst_port = conn.src_port;
 
-	conn_row = add_conn_row(&conn, TCP_CLOSE);
+	conn_row = add_conn_row(&conn, TCP_LISTEN);
 	conn_inv_row = add_conn_row(&conn_inv, TCP_CLOSE);
 	add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
 	add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
 
 
-	mutex_unlock(&conn_tab_mutex);
+	//mutex_unlock(&conn_tab_mutex);
 
 
 	return count;
