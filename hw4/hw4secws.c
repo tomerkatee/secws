@@ -85,6 +85,7 @@ typedef struct {
 typedef struct {
 	struct timer_list timer;
 	conn_row_node* conn_row;
+	int delete;
 } timeout_timer;
 
 
@@ -108,7 +109,7 @@ static timeout_timer timeout_timers[TIMEOUT_TIMERS_COUNT];
 // the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
 DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
 
-static DEFINE_MUTEX(conn_tab_mutex);
+static struct mutex conn_tab_mutex;
 
 
 static rule_t loopback_rule = {
@@ -481,30 +482,47 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 }
 
 
-//think about concurency
 void timeout_handler(struct timer_list *timer)
 {
 	timeout_timer *timeout;
-	mutex_lock(&conn_tab_mutex);
+	//mutex_lock(&conn_tab_mutex);
 	
-    timeout = from_timer(timeout, timer, timer);
-	del_conn_row(timeout->conn_row);
-    printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
+	timeout = from_timer(timeout, timer, timer);
+	//del_conn_row(timeout->conn_row);
+    //printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
+	printk("reached timer\n");
+	timeout->delete = 1;
 
-	mutex_unlock(&conn_tab_mutex);
+	//mutex_unlock(&conn_tab_mutex);
 }
 
-//TODO: think about acks are they mandatory to write here?
 
 // decides what to do with the packet by the connection row in the table, and also updates if needed
 static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_row)
 {
-	struct iphdr* ip_header = ip_hdr(skb);
+	//struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 	int i;
+	timeout_timer curr;
 
-	if(ip_header->daddr == conn_row->conn.src_ip)
+/* 	if(ip_header->daddr == conn_row->conn.src_ip)
+	{
+		if(conn_row->state == TCP_CLOSE || conn_row->state == TCP_LISTEN)	// allow only syn packets to be sent to a listening socket
+		{
+			if(tcp_header->syn && !tcp_header->ack)
+			{
+				printk("hey\n");
+				conn_row->state = TCP_LISTEN;
+			}
+			else
+			{
+				printk("wasap\n");
+				return NF_DROP;
+			}
+		}
+
 		return NF_ACCEPT;
+	} */
 
 	switch (conn_row->state)
 	{
@@ -512,11 +530,22 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 			if(tcp_header->syn && !tcp_header->ack)
 				conn_row->state = TCP_SYN_SENT;
 
-			else if(tcp_header->syn && tcp_header->ack)
-				conn_row->state = TCP_SYN_RECV;
-			
 			else
 				return NF_DROP;
+			
+			break;
+
+		case TCP_LISTEN:
+			printk("received\n");
+			if(tcp_header->syn && tcp_header->ack)
+			{
+				printk("received synack\n");
+				conn_row->state = TCP_SYN_RECV;
+			}
+			else
+			{
+				return NF_DROP;
+			}
 			
 			break;
 
@@ -544,14 +573,20 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 					conn_row->state = TCP_FIN_WAIT1;
 					for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 					{
-						if(!timer_pending(&timeout_timers[i].timer))
+						curr = timeout_timers[i];
+						if(!timer_pending(&curr.timer))
 						{
-							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));
+							if(curr.delete)
+								del_conn_row(curr.conn_row);
+
+							curr.delete = 0;
+							curr.conn_row = conn_row;
+							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));	
 							break;
 						}
 					}
-
-					conn_row->state = TCP_CLOSE;
+					if(i == TIMEOUT_TIMERS_COUNT)		// means we didn't find an available timer
+						conn_row->state = TCP_CLOSE;
 				}	
 				else
 				{
@@ -577,21 +612,22 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
 	struct tcphdr* tcp_header = tcp_hdr(skb);
-	conn_t skb_conn = { .src_ip = ip_header->saddr, .src_port = tcp_header->source, .dst_ip = ip_header->daddr, .dst_port = tcp_header->dest };
-	conn_t skb_conn_inv = { .src_ip = ip_header->daddr, .src_port = tcp_header->dest, .dst_ip = ip_header->saddr, .dst_port = tcp_header->source };
-	conn_row_node *conn_row, *conn_inv_row;
+	conn_t skb_conn_sender = { .src_ip = ip_header->saddr, .src_port = tcp_header->source, .dst_ip = ip_header->daddr, .dst_port = tcp_header->dest };
+	conn_t skb_conn_receiver = { .src_ip = ip_header->daddr, .src_port = tcp_header->dest, .dst_ip = ip_header->saddr, .dst_port = tcp_header->source };
+	conn_row_node *conn_row_sender, *conn_row_receiver;
 	int result = NF_DROP;
+	int i;
+	timeout_timer curr;
 
 	mutex_lock(&conn_tab_mutex);
 
-	conn_row = search_conn_table_by_conn(&skb_conn);
-	conn_inv_row = search_conn_table_by_conn(&skb_conn_inv);
+	conn_row_sender = search_conn_table_by_conn(&skb_conn_sender);
 
 	if(tcp_header->ack)
 	{
-		if(conn_row || conn_inv_row)
+		if(conn_row_sender)
 		{
-			result = handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
+			result = handle_packet_by_conn_row(skb, conn_row_sender);
 			goto post_result;
 		}
 	}
@@ -599,28 +635,51 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	// ACK = 0
 	if(tcp_header->syn)
 	{
-		if(tcp_header->source == htons(PORT_FTP_DATA_CONNECTION_SERVER) && !conn_row)
+		if(tcp_header->source == htons(PORT_FTP_DATA_CONNECTION_SERVER) && !conn_row_sender)
 		{
 			result = NF_DROP;
 			goto post_result;
 		}
 
-		if(!conn_row && !conn_inv_row)
+		if(!conn_row_sender)
 		{
-			conn_row = add_conn_row(&skb_conn, TCP_CLOSE);
-			conn_inv_row = add_conn_row(&skb_conn_inv, TCP_CLOSE);
-			add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
-			add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
+			conn_row_sender = add_conn_row(&skb_conn_sender, TCP_CLOSE);
+			conn_row_receiver = add_conn_row(&skb_conn_receiver, TCP_LISTEN);
+			add_conn_row_to_conn_hash(conn_row_sender, hash_conn(&conn_row_sender->conn));
+			add_conn_row_to_conn_hash(conn_row_receiver, hash_conn(&conn_row_receiver->conn));
+			if(tcp_header->dest == htons(PORT_HTTP_SERVER) || tcp_header->dest == htons(PORT_FTP_SERVER))
+			{
+				printk("syn for server caught\n");
+				add_conn_row_to_conn_hash(conn_row_sender, conn_row_sender->conn.dst_ip + conn_row_sender->conn.dst_port);
+				add_conn_row_to_conn_hash(conn_row_receiver, conn_row_receiver->conn.dst_ip + conn_row_receiver->conn.dst_port);
+			}
+
 		}	
-		result = handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
-		if(conn_row->state == TCP_CLOSE)
-			del_conn_row(conn_row);
-		if(conn_inv_row->state == TCP_CLOSE)
-			del_conn_row(conn_inv_row);
+		result = handle_packet_by_conn_row(skb, conn_row_sender);
+		// && handle_packet_by_conn_row(skb, conn_row_receiver);
+
+/* 		if(conn_row_sender->state == TCP_CLOSE)
+			del_conn_row(conn_row_sender); */
+/* 		if(conn_row_receiver->state == TCP_CLOSE)
+			del_conn_row(conn_row_receiver); */
+		
 		goto post_result;
 	}
 
 post_result:
+	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
+	{
+		curr = timeout_timers[i];
+		if(!timer_pending(&curr.timer))
+		{
+			if(curr.delete)
+				del_conn_row(curr.conn_row);
+
+			curr.delete = 0;
+			break;
+		}
+	}
+
 	mutex_unlock(&conn_tab_mutex);
 	return result;
 }
@@ -678,7 +737,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	u_int8_t action = NO_DECISION;
 	port_t src_port, dest_port;
 	ip_t my_addr;
-	struct klist_iter iter;
+	//struct klist_iter iter;
 	conn_row_node *conn_row;
 	
 
@@ -745,6 +804,18 @@ post_decision:
 		}
 		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER))
 		{
+			conn_row = search_conn_table_by_mitm_port(dest_port);
+			if(conn_row == NULL)
+			{
+				printk("packet received from server without mitm entry");
+			}
+			else if(conn_row->conn.src_ip == iph->daddr)
+			{
+				printk("sucked packet from server\n");
+				set_packet_fields(skb, iph->saddr, tcph->source, my_addr, conn_row->mitm_src_port);
+			}
+
+/* 
 			klist_iter_init(&conn_klist, &iter);
 			while(klist_next(&iter))
 			{
@@ -755,9 +826,8 @@ post_decision:
 					set_packet_fields(skb, iph->saddr, tcph->source, my_addr, conn_row->mitm_src_port);
 				}
 			}
-			klist_iter_exit(&iter);
+			klist_iter_exit(&iter); */
 		}
-		
 	}
 
 	return action;
@@ -771,6 +841,10 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	struct tcphdr* tcph;
 	struct iphdr* iph = ip_hdr(skb);
 	conn_row_node* conn_row;
+	
+	mutex_lock(&conn_tab_mutex);
+
+	printk("localout hook\n");
 
 	if((iph->version != 4) || (iph->protocol != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
@@ -795,6 +869,8 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
 	}
+
+	mutex_unlock(&conn_tab_mutex);
 
 	return NF_ACCEPT;
 }
@@ -1088,8 +1164,7 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	conn_inv_row = add_conn_row(&conn_inv, TCP_CLOSE);
 	add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
 	add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
-	add_conn_row_to_conn_hash(conn_row, conn_row->conn.dst_ip + conn_row->conn.dst_port);
-	add_conn_row_to_conn_hash(conn_inv_row, conn_inv_row->conn.dst_ip + conn_inv_row->conn.dst_port);
+
 
 	mutex_unlock(&conn_tab_mutex);
 
@@ -1215,6 +1290,7 @@ static int __init my_module_init_function(void) {
 	klist_init(&log_klist, NULL, NULL);
 	klist_init(&conn_klist, NULL, NULL);
 	hash_init(conn_hashtable);
+	mutex_init(&conn_tab_mutex);
 
 	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 	{
