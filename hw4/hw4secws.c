@@ -379,7 +379,7 @@ static conn_row_node* search_conn_table_by_conn(conn_t *conn)
 }
 
 
-static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
+static conn_row_p_node* search_conn_table_by_mitm_port(port_t mitm_port)
 {
 	conn_row_p_node* curr;
 
@@ -391,20 +391,15 @@ static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
 
 	return NULL;
 }
-/*
-static int hash_src(ip_t src_ip, port_t src_port)
-{
-	return src_ip + src_port;
-}
-*/
- static conn_row_node* search_conn_table_by_dst(ip_t src_ip, port_t src_port)
+
+static conn_row_node* search_conn_table_by_dst(ip_t dst_ip, port_t dst_port)
 {
 	conn_row_p_node* curr;
 
-	hash_for_each_possible(conn_hashtable, curr, hnode, hash_src(src_ip, src_port))
+	hash_for_each_possible(conn_hashtable, curr, hnode, dst_ip + dst_port)
 	{
-		if(curr->conn_row->conn.src_ip == src_ip && curr->conn_row->conn.src_port == src_port)
-			return curr;
+		if(curr->conn_row->conn.dst_ip == dst_ip && curr->conn_row->conn.dst_port == dst_port)
+			return curr->conn_row;
 	}
 
 	return NULL;
@@ -412,22 +407,38 @@ static int hash_src(ip_t src_ip, port_t src_port)
 
 static conn_row_node* del_conn_row(conn_row_node *conn_row)
 {
-	conn_row_p_node* conn_row_p;
-	if((conn_row_p = search_conn_table_by_conn(&conn_row->conn)))
+	conn_row_p_node* curr;
+	struct klist_iter iter;
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(&conn_row->conn))
 	{
-		hash_del(&conn_row_p->hnode);
-		kfree(conn_row_p);
+		if(conn_eq(&curr->conn_row->conn, &conn_row->conn))
+			hash_del(&curr->hnode);
 	}
-	if((conn_row_p = search_conn_table_by_mitm_port(conn_row->mitm_src_port)))
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row->mitm_src_port)
 	{
-		hash_del(&conn_row_p->hnode);
-		kfree(conn_row_p);
+		if(curr->conn_row->mitm_src_port == conn_row->mitm_src_port)
+			hash_del(&curr->hnode);
 	}
-		if((conn_row_p = search_conn_table_by_conn(conn)))
+
+	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row->conn.dst_ip + conn_row->conn.dst_port)
 	{
-		hash_del(&conn_row_p->hnode);
-		kfree(conn_row_p);
+		if(curr->conn_row->conn.dst_ip == conn_row->conn.dst_ip && curr->conn_row->conn.dst_port == conn_row->conn.dst_port)
+			hash_del(&curr->hnode);
 	}
+
+	klist_iter_init(&conn_klist, &iter);
+	while(klist_next(&iter))
+	{
+		conn_row = cast_to_conn_row_node(iter.i_cur);
+		if(conn_eq(&conn_row->conn, &conn_row->conn))
+		{
+
+		}
+	}
+	klist_iter_exit(&iter);
+
 
 	conn_row->conn = *conn;
 	conn_row->state = initialState;
@@ -765,18 +776,12 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 
 	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10))
 	{
-		klist_iter_init(&conn_klist, &iter);
-		while(klist_next(&iter))
+		if((conn_row = search_conn_table_by_dst(iph->daddr, tcph->dest)))
 		{
-			conn_row = cast_to_conn_row_node(iter.i_cur);
-			if(conn_row->conn.dst_ip == iph->daddr && conn_row->conn.dst_port == tcph->dest)
-			{
-				printk("me sending to client\n");
-				correct_conn = &conn_row->conn;
-				set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
-			}
+			printk("me sending to client\n");
+			correct_conn = &conn_row->conn;
+			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
-		klist_iter_exit(&iter);
 	}
 	else
 	{
@@ -1106,19 +1111,6 @@ char* copy_conn_row_to_buffer(char *buff, conn_row_node *conn_row)
 
 	return curr;
 }
-
-// ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
-// {
-// 	char *curr = buf;
-// 	conn_row_node *conn_row;
-// 	int bucket;
-// 	hash_for_each(conn_hashtable, bucket, conn_row, hnode)
-// 	{
-// 		curr = copy_conn_row_to_buffer(curr, conn_row);
-// 	}
-
-// 	return curr - buf;
-// }
 
 
 ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
