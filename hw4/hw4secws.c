@@ -405,26 +405,28 @@ static conn_row_node* search_conn_table_by_dst(ip_t dst_ip, port_t dst_port)
 	return NULL;
 }
 
-static conn_row_node* del_conn_row(conn_row_node *conn_row)
+static void del_conn_row(conn_row_node *conn_row_del)
 {
 	conn_row_p_node* curr;
 	struct klist_iter iter;
+	conn_row_node conn_row;
+	conn_row_node prev = NULL;
 
-	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(&conn_row->conn))
+	hash_for_each_possible(conn_hashtable, curr, hnode, hash_conn(&conn_row_del->conn))
 	{
-		if(conn_eq(&curr->conn_row->conn, &conn_row->conn))
+		if(conn_eq(&curr->conn_row->conn, &conn_row_del->conn))
 			hash_del(&curr->hnode);
 	}
 
-	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row->mitm_src_port)
+	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row_del->mitm_src_port)
 	{
-		if(curr->conn_row->mitm_src_port == conn_row->mitm_src_port)
+		if(curr->conn_row->mitm_src_port == conn_row_del->mitm_src_port)
 			hash_del(&curr->hnode);
 	}
 
-	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row->conn.dst_ip + conn_row->conn.dst_port)
+	hash_for_each_possible(conn_hashtable, curr, hnode, conn_row_del->conn.dst_ip + conn_row_del->conn.dst_port)
 	{
-		if(curr->conn_row->conn.dst_ip == conn_row->conn.dst_ip && curr->conn_row->conn.dst_port == conn_row->conn.dst_port)
+		if(curr->conn_row->conn.dst_ip == conn_row_del->conn.dst_ip && curr->conn_row->conn.dst_port == conn_row_del->conn.dst_port)
 			hash_del(&curr->hnode);
 	}
 
@@ -432,20 +434,19 @@ static conn_row_node* del_conn_row(conn_row_node *conn_row)
 	while(klist_next(&iter))
 	{
 		conn_row = cast_to_conn_row_node(iter.i_cur);
-		if(conn_eq(&conn_row->conn, &conn_row->conn))
+		if(conn_eq(&conn_row->conn, &conn_row_del->conn))
 		{
-
+			if(tail_conn == conn_row)
+			{
+				tail_conn = prev;
+			}
+			klist_del(iter.i_cur);
+			kfree(conn_row);
+			break;
 		}
+		prev = conn_row;
 	}
 	klist_iter_exit(&iter);
-
-
-	conn_row->conn = *conn;
-	conn_row->state = initialState;
-	conn_row->mitm_src_port = 0;
-	klist_add_tail(&conn_row->node, &conn_klist);
-	tail_conn = conn_row;
-	return conn_row;
 }
 
 
@@ -483,11 +484,13 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 //think about concurency
 void timeout_handler(struct timer_list *timer)
 {
+	mutex_lock(&conn_tab_mutex);
+	
     timeout_timer *timeout = from_timer(timeout, timer, timer);
-	
-	timeout->conn_row->state = TCP_CLOSE;
-	
+	del_conn_row(timeout->conn_row);
     printk(KERN_INFO "Timeout occurred! State: %d\n", timeout->conn_row->state);
+
+	mutex_unlock(&conn_tab_mutex);
 }
 
 //TODO: think about acks are they mandatory to write here?
@@ -563,10 +566,7 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 				conn_row->state = TCP_TIME_WAIT;
 			else
 				return NF_DROP;
-			break;
-		
-			
-		
+			break;			
 	}
 	return NF_ACCEPT;
 
@@ -612,7 +612,10 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 			add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
 		}	
 		result = handle_packet_by_conn_row(skb, conn_row) && handle_packet_by_conn_row(skb, conn_inv_row);
-		if(conn_row->state == TCP_CLOS)
+		if(conn_row->state == TCP_CLOSE)
+			del_conn_row(conn_row);
+		if(conn_row_inv->state == TCP_CLOSE)
+			del_conn_row(conn_row);
 		goto post_result;
 	}
 
@@ -1022,6 +1025,8 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 	struct klist_iter iter;
 	conn_row_node *conn_row;
 
+	mutex_lock(&conn_tab_mutex);
+
 	COPY_TO_VAR_AND_ADVANCE(curr, client_ip);
 	COPY_TO_VAR_AND_ADVANCE(curr, client_port);
 	COPY_TO_VAR_AND_ADVANCE(curr, curr_mitm_port);
@@ -1039,6 +1044,7 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 	}
 	klist_iter_exit(&iter);
 
+	mutex_unlock(&conn_tab_mutex);
 	return count;
 }
 
@@ -1062,6 +1068,9 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	conn_row_node *conn_inv_row;
 	conn_t conn, conn_inv;
 
+	mutex_lock(&conn_tab_mutex);
+
+
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.src_ip);
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.dst_ip);
 	COPY_TO_VAR_AND_ADVANCE(curr, conn.src_port);
@@ -1081,6 +1090,9 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
 	add_conn_row_to_conn_hash(conn_row, conn_row->conn.dst_ip + conn_row->conn.dst_port);
 	add_conn_row_to_conn_hash(conn_inv_row, conn_inv_row->conn.dst_ip + conn_inv_row->conn.dst_port);
+
+	mutex_unlock(&conn_tab_mutex);
+
 
 	return count;
 }
