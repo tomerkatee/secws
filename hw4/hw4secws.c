@@ -49,13 +49,14 @@ typedef __be16 port_t;
 						} while(0)
 
 
+// represents a chunck of log rows that is kept in a klist
 typedef struct {
 	int rows_count;
     log_row_t* data;
     struct klist_node node;
 } log_node;
 
-
+// custom iterator that goes over log rows
 typedef struct {
 	struct klist_iter nodes_iter;
 	int i;
@@ -69,6 +70,7 @@ typedef struct{
 	port_t dst_port;
 } conn_t;
 
+// connection row that is kept in a klist
 typedef struct {
 	conn_t conn;	
 	int state;
@@ -76,11 +78,13 @@ typedef struct {
 	struct klist_node node;
 } conn_row_node;
 
+// pointer to a connection row that is kept in the hash table
 typedef struct {
 	conn_row_node* conn_row;
 	struct hlist_node hnode;
 } conn_row_p_node;
 
+// timer for deleting connection row, set when a fin is sent
 typedef struct {
 	struct timer_list timer;
 	conn_row_node* conn_row;
@@ -104,7 +108,7 @@ static log_iter read_log_iter;
 static port_t curr_mitm_port;
 static timeout_timer timeout_timers[TIMEOUT_TIMERS_COUNT];
 
-// the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_rows
+// the hashtable will contain 2^(CONN_HASHTABLE_SIZE_BITS) buckets, each containing linked list of conn_row_p_node's
 DEFINE_HASHTABLE(conn_hashtable, CONN_HASHTABLE_SIZE_BITS);
 
 
@@ -198,6 +202,7 @@ static int is_ack_in_range(unsigned short ack, ack_t range)
 	return range == ACK_ANY ? 1 : (range == ACK_YES ? ack : !ack);
 }
 
+// given a packet and a rule, compares between them and decides if the packet matches the rule
 static int rule_match(rule_t *rule, struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
@@ -260,7 +265,7 @@ static int is_xmas_packet(struct sk_buff *skb)
 }
 
 
-// this function will be called only for IPV4 TCP/UDP/ICMP packets
+// creates a log row struct. this function will be called only for IPV4 TCP/UDP/ICMP packets
 static log_row_t create_log(struct sk_buff *skb, __u8 action, reason_t reason)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
@@ -357,11 +362,13 @@ static int conn_eq(conn_t *conn1, conn_t *conn2)
 		   conn1->dst_port == conn2->dst_port;
 }
 
+// converts a connection into a hash for hash table access
 static int hash_conn(conn_t *conn)
 {
 	return conn->src_ip + conn->dst_ip + conn->src_port + conn->dst_port;
 }
 
+// searches hash table for a connection row by hash-value = hash_conn(conn)
 static conn_row_node* search_conn_table_by_conn(conn_t *conn)
 {
 	conn_row_p_node* curr;
@@ -375,7 +382,7 @@ static conn_row_node* search_conn_table_by_conn(conn_t *conn)
 	return NULL;
 }
 
-
+// searches hash table for a connection row by hash-value = mitm_port
 static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
 {
 	conn_row_p_node* curr;
@@ -389,6 +396,7 @@ static conn_row_node* search_conn_table_by_mitm_port(port_t mitm_port)
 	return NULL;
 }
 
+// searches hash table for a connection row by hash-value = dst_ip + dst_port
 static conn_row_node* search_conn_table_by_dst(ip_t dst_ip, port_t dst_port)
 {
 	conn_row_p_node* curr;
@@ -402,6 +410,7 @@ static conn_row_node* search_conn_table_by_dst(ip_t dst_ip, port_t dst_port)
 	return NULL;
 }
 
+// deletes a connection row from the hash-table and then from the linked list
 static void del_conn_row(conn_row_node *conn_row_del)
 {
 	conn_row_p_node* curr;
@@ -449,7 +458,7 @@ static void del_conn_row(conn_row_node *conn_row_del)
 	klist_iter_exit(&iter);
 }
 
-
+// adds a connection row to the linked list
 static conn_row_node* add_conn_row(conn_t *conn, int initialState)
 {
 	conn_row_node* conn_row = kmalloc(sizeof(conn_row_node), GFP_KERNEL);
@@ -466,6 +475,7 @@ static conn_row_node* add_conn_row(conn_t *conn, int initialState)
 	return conn_row;
 }
 
+// adds a connection row pointer to the hash table by the given hash value
 static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int hash)
 {
 	conn_row_p_node* conn_row_p = kmalloc(sizeof(conn_row_p_node), GFP_KERNEL);
@@ -480,7 +490,7 @@ static conn_row_p_node* add_conn_row_to_conn_hash(conn_row_node* conn_row, int h
 	return conn_row_p;
 }
 
-
+// called after the connection row deletion timer expires. The fact that the timer has expired is enough for later deletion
 void timeout_handler(struct timer_list *timer)
 {
 	// do nothing.
@@ -489,6 +499,7 @@ void timeout_handler(struct timer_list *timer)
 
 
 // decides what to do with the packet by the connection row in the table, and also updates if needed
+// only called for the sender of the packet
 static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_row)
 {
 	struct tcphdr* tcp_header = tcp_hdr(skb);
@@ -540,6 +551,7 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 				if(tcp_header->fin)
 				{
 					conn_row->state = TCP_FIN_WAIT1;
+					// try finding an available timeout timer
 					for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 					{
 						curr = &timeout_timers[i];
@@ -547,15 +559,18 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 						{
 							if(curr->conn_row)
 							{
+								// found an expired timer of a connection row to be deleted
 								del_conn_row(curr->conn_row);
 							}
 
 							curr->conn_row = conn_row;
+							// set the timeout timer and after TIMEOUT_MILISECONDS, conn_row will be ready for deletion
 							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));	
 							break;
 						}
 					}
-					if(i == TIMEOUT_TIMERS_COUNT)		// means we didn't find an available timer
+					// if we didn't find an available timer, just close the connection row right now, don't wait for proper termination
+					if(i == TIMEOUT_TIMERS_COUNT)		
 						conn_row->state = TCP_CLOSE;
 				}	
 				else
@@ -581,6 +596,7 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 
 }
 
+// decides whether to drop or accept the packet by reading the connection table and updates the connection table by the packet.
 static int handle_by_conn_tab(struct sk_buff *skb)
 {
 	struct iphdr* ip_header = ip_hdr(skb);
@@ -595,10 +611,12 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 
 	conn_row_sender = search_conn_table_by_conn(&skb_conn_sender);
 
+	// means that this packet is of an existing TCP connection
 	if(tcp_header->ack)
 	{
 		if(conn_row_sender)
 		{
+			// we only update the sender's connection row because we cannot assume something changed for the receiver (we didn't get any new data from him)
 			result = handle_packet_by_conn_row(skb, conn_row_sender);
 			goto post_result;
 		}
@@ -607,6 +625,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	// ACK = 0
 	if(tcp_header->syn)
 	{
+		// if it's an ftp data connection, the sender's row must have been already in the connection table thanks to the userspace program
 		if(tcp_header->source == htons(PORT_FTP_DATA_CONNECTION_SERVER) && !conn_row_sender)
 		{
 			result = NF_DROP;
@@ -615,10 +634,13 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 
 		if(!conn_row_sender)
 		{
+			// adding connection row for two directions: both for sender and receiver
 			conn_row_sender = add_conn_row(&skb_conn_sender, TCP_CLOSE);
 			conn_row_receiver = add_conn_row(&skb_conn_receiver, TCP_LISTEN);
+			// adding connection rows pointers into the hash table
 			add_conn_row_to_conn_hash(conn_row_sender, hash_conn(&conn_row_sender->conn));
 			add_conn_row_to_conn_hash(conn_row_receiver, hash_conn(&conn_row_receiver->conn));
+			// if it's a packet destined for a server then also add to hash table by hash-value = dst_ip + dst_port (for MITM purposes)
 			if(tcp_header->dest == htons(PORT_HTTP_SERVER) || tcp_header->dest == htons(PORT_FTP_SERVER))
 			{
 				add_conn_row_to_conn_hash(conn_row_sender, conn_row_sender->conn.dst_ip + conn_row_sender->conn.dst_port);
@@ -632,11 +654,13 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	}
 
 post_result:
+	// if something caused the state to be TCP_CLOSE, just delete the connection row
 	if(conn_row_sender && conn_row_sender->state == TCP_CLOSE)
 	{
 		del_conn_row(conn_row_sender);
 	}
 
+	// timeout timers that just expired, their connection rows are deleted here, and the timers can be reused
  	for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 	{
 		curr = &timeout_timers[i];

@@ -49,3 +49,54 @@ in the router should be disabled. In case it is enabled, all packets that reach 
 address that doesn't match the expected subnet mask from that interface will be dropped (regardless of the firewall).
 In case it is disabled, packets will pass through according to their destination IP but will be dropped if a "spoof"
 rule is added to the firewall I built.
+
+
+
+
+
+
+
+
+
+
+
+
+
+All the module's c code lies in the hw4secws.c file. fw.h remains unchanged and there are no extra files.
+I implemented MITM functionality inside mitm.py, which ftp.py and http.py use.
+Notice that mitm.pt, http.py and ftp.py use code from main.py so they have to be at the same folder in execution.
+
+
+
+hw4secws.c explanations:
+
+this file has both firewall logic and data structure implementations.
+it contains all the rules and log management from hw3, and now also manages connection table and MITM.
+
+connection table:
+
+The connection table's rows are kept in a klist (kernel linked list implemntation),
+and are quickly accessed via a hash table (using hashtable.h linux implementation).
+
+Each row consists of: srcIP, dstIP, srcPort, dstPort, mitm_src_port.
+The mitm_src_port entry represents the port that is used by our machine to inspect the data flow
+in an ftp or http connection for that specific client/server connection.
+In case of a regular (non ftp/http) connection this field is ignored.
+
+
+Drivers and sysfs Attributes:
+
+conns - this attribute represents the connection table content. When read from userspace, it simply iterates over the connection table klist
+and copies all connection rows into the user's buffer.
+
+mitm - this attribute helps userspace programs to set a MITM infrastructure by interfacing with the connection table.
+When writing to it, the userspace program gives it a port and a client address, that will then be inserted into the client's row
+in the connection table as a mitm_src_port.
+When reading from it, it returns the server address from the aforementioned client row.
+Notice that for reasonable use, it is required from a userspace MITM program to write and immediately read from the mitm attribute,
+else reading will give the wrong client's server address.
+
+add_conn - this attribute helps adding an FTP data connection into the connection table. when writing to it from userspace, it takes
+a client address and a server address and inserts a matching connection row into the table.
+
+
