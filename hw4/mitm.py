@@ -2,6 +2,7 @@ import struct
 import socket
 from main import Rule, convert_to_little_end_port, convert_to_big_end_port, TwoDirectionalDict
 import selectors
+import time
    
 
 path_to_mitm_attr = "/sys/class/fw/conns/mitm"
@@ -99,11 +100,17 @@ class MITMInspector():
                             self.sel.unregister(sock)
                             sock.close()
                             self.sockets.remove(sock)
+                        
 
                     elif mask & selectors.EVENT_WRITE:
                         try:
-                            sock.sendall(bytes(self.sock_to_send_buff[sock]))
-                            self.sock_to_send_buff[sock] = bytearray()
+                            data_to_send = bytes(self.sock_to_send_buff[sock])
+                            if(len(data_to_send) > 0):
+                                sock.sendall(data_to_send)
+                                self.sock_to_send_buff[sock] = bytearray()
+                            else:
+                                time.sleep(0.02) # this prevents a scenario of empty EVENT_WRITE's sucking too many CPU time
+
                         except:
                             self.sel.unregister(sock)
                             sock.close()
