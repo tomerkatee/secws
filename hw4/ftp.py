@@ -38,13 +38,14 @@ class FTPInspector(mitm.MITMInspector):
         data_buffer = data_buffer[-data_buffer_max_len:]
 
 
+        # find the last appearance of a PORT command in the data received
         last_match = None
         for m in re.finditer(port_re_format, data_buffer):
             last_match = m
 
 
         if last_match:
-
+            # add the FTP data connection row to the connection table using add_conn sysfs attribute
             with open(path_to_add_conn_attr, 'wb') as add_conn_attr:
                 server_addr = self.client_to_mitm_client.get_value(sock).getpeername()
                 server_ip = Rule.ip_str_to_int(server_addr[0])

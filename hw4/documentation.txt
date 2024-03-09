@@ -1,67 +1,3 @@
-The 'main' userspace program is called main.py and does not consist of any other userspace files.
-I made main.py executable (with a shebang) so you can run it with "./main.py".
-Also no changes were made to fw.h.
-
-
-Here are some explanations of my code:
-
-hw3secws.c: the module source. here are some keypoints:
-
-In order to represent the rules, I use a simple array of MAX_RULES rule_t entries.
-
-The log is implemented using a linked list of LOG_CHUNCK_SIZE-sized log_row_t arrays.
-The list is "linked" using klist, each node in the list contains its 'data' - the array,
-and its klist_node for iteration purposes.
-I also built my own version of iterator called log_iter, it helps iterating over each log_row_t in the list instead of only the list chunck nodes.
-
-I register the forward hook and whenever a packet comes, I compare it to all the rules and work accordingly.
-After that, I create a log_row_t for it (by reading sk_buff fields) and then call add_log().
-By comparing the created log_row_t to the other log rows already in the log, the program can tell
-when to add a new log row, or just increment a counter of an existing entry.
-
-both read_log() and display_rules() just output a binary representation of rule_t and log_row_t using the
-method memcpy() on the structs' fields directly to the buffer.
-
-modify_rules() also use memcpy from the buffer to a new rule_t struct for each rule,
-each field taken from the buffer is validated and if something goes wrong, the rule table
-remains the same and -1 is returned.
-
-modify_reset() ignores the user buffer and just deletes all nodes from klist, frees 
-all kmalloc-ed memory and resets the klist.
-
-main.py: the userspace python program. here are some keypoints:
-
-For each purpose, the python code opens the corresponding file and reads/writes from it.
-In order to read/write information from/to the sysfs_attr/chardev,
-I use the 'struct' module, as it helps packing/unpacking fields into/from binary.
-Each rule that comes from a rules file goes from text to a Rule class object to binary (with struct),
-and only then written directly to /sys/class/fw/rules/rules sysfs_attr.
-The binary read from /sys/class/fw/rules/rules, is gradually appended to a rules list,
-each rule is unpacked with the 'struct' module into a Rule. afterwards all the rule objects
-become strings and printed as a table.
-Each log row is read as binary, unpacked with 'struct' into a LogRow object and then becomes str for printing.
-For clearing the log, a simple "0" is written to /sys/class/fw/fw_log/reset sysfs_attr.
-
-
-
-I also noticed that for srcIP spoofed packets to actually reach the forward hook, a mechanism called "Reverse Path Filtering"
-in the router should be disabled. In case it is enabled, all packets that reach a router's interface with a source
-address that doesn't match the expected subnet mask from that interface will be dropped (regardless of the firewall).
-In case it is disabled, packets will pass through according to their destination IP but will be dropped if a "spoof"
-rule is added to the firewall I built.
-
-
-
-
-
-
-
-
-
-
-
-
-
 All the module's c code lies in the hw4secws.c file. fw.h remains unchanged and there are no extra files.
 I implemented MITM functionality inside mitm.py, which ftp.py and http.py use.
 Notice that mitm.pt, http.py and ftp.py use code from main.py so they have to be at the same folder in execution.
@@ -100,3 +36,32 @@ add_conn - this attribute helps adding an FTP data connection into the connectio
 a client address and a server address and inserts a matching connection row into the table.
 
 
+Packet Handling:
+
+The module contains 2 hooks:
+
+1. pre-routing hook: packet that are caught in this hook are checked against the static rule table or, for existing TCP connections
+(and FTP data connections), against the connection table.
+In this hook, the connection table also updates itself and MITM packet-field changes are made.
+
+2. local-out hook: used for spoofing the source of outgoing packets from http.py and ftp.py so that the client and the server won't notice the MITM.
+
+
+Userspace Programs:
+
+main.py: same as in hw3, except for adding show_conns.
+
+mitm.py: this file is in charge of managing multiple MITM connections concurrently.
+It uses python's selector module in order to manage multiple socket WRITE and READ events.
+It has a socket listening on a port (800 for http.py, and 210 for ftp.py), and when a client connects to a server, our module diverts
+the connection into that listening socket and they connect. Afterwards mitm.py update the connection table and starts a connection
+with the original server. After that the client and the server communicate through mitm.py and it inspects the data transmitted on the fly.
+When mitm.py finds a data that does not pass inspection it drops the data, not letting it pass through.
+
+http.py: this file uses mitm.py and only overrides the inspection logic. Given data from the server, the inspector looks for "Content Type: text/csv" or
+"application/zip" and if they appear it drops the data. It also remembers to drop all data afterwards until it sees a new "Content Type:"
+substring, indicating of a new "innocent" packet.
+
+ftp.py: this file also uses mitm.py and only overrides the inspection logic. Given data from the client, the inspector looks for PORT commands
+using regular expressions implementation in the 're' module of python. Upon finding a PORT command, it updates the connection table accordingly
+using the add_conn sysfs attribute of our module.

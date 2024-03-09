@@ -678,6 +678,7 @@ post_result:
 	return result;
 }
 
+// this function takes a packet and sets its fields. it is taken from the github example provided to us.
 static void set_packet_fields(struct sk_buff *skb, ip_t src_ip, port_t src_port, ip_t dst_ip, port_t dst_port)
 {
 	int tcp_len;
@@ -739,6 +740,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
 		return NF_ACCEPT;
 
+	// if packet is TCP and ACK is set (or came from port 20, which is ftp data connection), manage with connection table
 	if(packet_prot == PROT_TCP)
 	{
 		if(tcp_hdr(skb)->ack || tcp_hdr(skb)->source == htons(PORT_FTP_DATA_CONNECTION_SERVER))
@@ -749,7 +751,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 		}
 	}
 
-
+	// else, check with static rule table
 	if(is_xmas_packet(skb))
 	{
 		action = NF_DROP;
@@ -767,12 +769,14 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 			break;
 		}
 	}
+	// no rule is matched, activate default rule
 	if(action == NO_DECISION)
 	{
 		action = default_rule.action;
 		reason = REASON_NO_MATCHING_RULE;
 		goto post_decision;
 	}
+	// after passing static rule table, manage the connection table according to the new SYN packet
 	if(packet_prot == PROT_TCP && action == NF_ACCEPT)
 	{
 		action = handle_by_conn_tab(skb);
@@ -784,6 +788,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 post_decision:
 	add_log(create_log(skb, action, reason));
 
+	// manage MITM if needed
 	if(packet_prot == PROT_TCP)
 	{
 		tcph = tcp_hdr(skb);
@@ -792,10 +797,12 @@ post_decision:
 
 		my_addr = strcmp(skb->dev->name, OUT_NET_DEVICE_NAME)==0 ? OUT_NET_IP_ADDR : IN_NET_IP_ADDR;
 
+		// divert packet from client to our userspace
 		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
 		{
 			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, htons(ntohs(dest_port)*10));
 		}
+		// divert packet from server to our userspace
 		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER))
 		{
 			skb_conn_inverse.src_ip = iph->daddr;
@@ -828,6 +835,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 
 	tcph = tcp_hdr(skb);
 
+	// for packets from MITM userspace to client, disguise as the original server
 	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10))
 	{
 		if((conn_row = search_conn_table_by_dst(iph->daddr, tcph->dest)))
@@ -836,6 +844,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 			set_packet_fields(skb, correct_conn->src_ip, correct_conn->src_port, correct_conn->dst_ip, correct_conn->dst_port);
 		}
 	}
+	// for packets from MITM userspace to server, disguise as the original client
 	else if ((conn_row = search_conn_table_by_mitm_port(tcph->source)))
 	{
 		correct_conn = &conn_row->conn;
@@ -1063,6 +1072,7 @@ ssize_t modify_reset(struct device *dev, struct device_attribute *attr, const ch
 	return count;
 }
 
+// change mitm_src_port for the client's connection row
 ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	ip_t client_ip;
@@ -1091,6 +1101,7 @@ ssize_t modify_mitm(struct device *dev, struct device_attribute *attr, const cha
 	return count;
 }
 
+// get server address from the client's connection row (found by curr_mitm_port)
 ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	char *curr = buf;
@@ -1109,6 +1120,7 @@ ssize_t display_mitm(struct device *dev, struct device_attribute *attr, char *bu
 	return curr - buf;
 }
 
+// add connection row to the connection table (for setting up FTP data connection)
 ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	const char *curr = buf;
@@ -1133,9 +1145,6 @@ ssize_t modify_add_conn(struct device *dev, struct device_attribute *attr, const
 	conn_inv_row = add_conn_row(&conn_inv, TCP_CLOSE);
 	add_conn_row_to_conn_hash(conn_row, hash_conn(&conn_row->conn));
 	add_conn_row_to_conn_hash(conn_inv_row, hash_conn(&conn_inv_row->conn));
-
-
-
 
 	return count;
 }
@@ -1167,7 +1176,7 @@ char* copy_conn_row_to_buffer(char *buff, conn_row_node *conn_row)
 	return curr;
 }
 
-
+// display all connection rows in connection table by copying data to userspace buffer
 ssize_t display_conns(struct device *dev, struct device_attribute *attr, char *buf)	//sysfs show implementation
 {
 	conn_row_node *conn_row;
