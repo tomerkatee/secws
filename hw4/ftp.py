@@ -31,8 +31,6 @@ class FTPInspector(mitm.MITMInspector):
     def inspect_from_client(self, data, sock):
         global data_buffer
 
-        print("inspecting...")
-
         if(not super().inspect_from_client(data, sock)):
             return False
 
@@ -40,14 +38,12 @@ class FTPInspector(mitm.MITMInspector):
         data_buffer = data_buffer[-data_buffer_max_len:]
 
 
-        print("Searching...")
         last_match = None
         for m in re.finditer(port_re_format, data_buffer):
             last_match = m
 
 
         if last_match:
-            print("match!")
 
             with open(path_to_add_conn_attr, 'wb') as add_conn_attr:
                 server_addr = self.client_to_mitm_client.get_value(sock).getpeername()
@@ -59,13 +55,8 @@ class FTPInspector(mitm.MITMInspector):
                 client_port_little = int(last_match.group(5))*256 + int(last_match.group(6))
                 client_port = convert_to_big_end_port(client_port_little)
 
-                print(client_ip_str + ": " + str(client_port_little))
-
                 add_conn_attr.write(struct.pack(add_conn_format, client_ip, server_ip, client_port, server_port))
                 data_buffer = ""
-
-        else:
-            print("no match!")
             
         return True
     

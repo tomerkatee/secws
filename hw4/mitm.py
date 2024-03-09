@@ -35,7 +35,7 @@ class MITMInspector():
             client_port = convert_to_big_end_port(client_addr[1])
             mitm_port = convert_to_big_end_port(mitm_client_socket.getsockname()[1])
 
-            print(str.format("client_ip: {}, client_port: {}, mitm_port: {}", client_ip, client_port, mitm_port))
+            print(str.format("received new client: ip: {}, port: {}, mitm_port: {}", client_addr[0], client_addr[1], mitm_client_socket.getsockname()[1]))
 
             mitm_attr.write(struct.pack(mitm_update_format, client_ip, client_port, mitm_port))
 

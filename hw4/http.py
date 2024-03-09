@@ -21,6 +21,7 @@ http_inspector = None
 class HTTPInspector(mitm.MITMInspector):
     def __init__(self):
         super().__init__(800)
+        self.bad_packet = False
 
     def inspect_from_server(self, data, sock):
         global data_buffer
@@ -31,7 +32,24 @@ class HTTPInspector(mitm.MITMInspector):
         data_buffer += data.decode('utf-8')
         data_buffer = data_buffer[-data_buffer_max_len:]
 
-        return not ("Content-Type: text/csv" in data_buffer or "Content-Type: application/zip" in data_buffer)
+
+        # this represents a new "innocent" packet
+        if("Content-Type:" in data_buffer):
+            self.bad_packet = False
+
+        # if we are still in the same bad packet as before don't pass the data
+        if(self.bad_packet):
+            return False
+           
+        # detecting a bad packet
+        if("Content-Type: text/csv" in data_buffer or "Content-Type: application/zip" in data_buffer):
+            self.bad_packet = True
+            data_buffer = ""
+            return False
+        
+        return True
+        
+
 
 
 def main():
