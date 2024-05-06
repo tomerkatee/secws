@@ -28,6 +28,8 @@ typedef __be16 port_t;
 #define NO_DECISION 99
 #define REASON_EXISTING_TCP_CONNECTION -7
 #define PORT_HTTP_SERVER 80
+#define PORT_SUPERSET_SERVER 8088
+#define PORT_SUPERSET_MITM 808
 #define PORT_FTP_SERVER 21
 #define PORT_FTP_DATA_CONNECTION_SERVER 20
 #define IN_NET_IP_ADDR 50397450
@@ -641,7 +643,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 			add_conn_row_to_conn_hash(conn_row_sender, hash_conn(&conn_row_sender->conn));
 			add_conn_row_to_conn_hash(conn_row_receiver, hash_conn(&conn_row_receiver->conn));
 			// if it's a packet destined for a server then also add to hash table by hash-value = dst_ip + dst_port (for MITM purposes)
-			if(tcp_header->dest == htons(PORT_HTTP_SERVER) || tcp_header->dest == htons(PORT_FTP_SERVER))
+			if(tcp_header->dest == htons(PORT_HTTP_SERVER) || tcp_header->dest == htons(PORT_FTP_SERVER) || tcp_header->dest == htons(PORT_SUPERSET_SERVER))
 			{
 				add_conn_row_to_conn_hash(conn_row_sender, conn_row_sender->conn.dst_ip + conn_row_sender->conn.dst_port);
 				add_conn_row_to_conn_hash(conn_row_receiver, conn_row_receiver->conn.dst_ip + conn_row_receiver->conn.dst_port);
@@ -798,12 +800,12 @@ post_decision:
 		my_addr = strcmp(skb->dev->name, OUT_NET_DEVICE_NAME)==0 ? OUT_NET_IP_ADDR : IN_NET_IP_ADDR;
 
 		// divert packet from client to our userspace
-		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
+		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER) || dest_port == htons(PORT_SUPERSET_SERVER))
 		{
 			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, htons(ntohs(dest_port)*10));
 		}
 		// divert packet from server to our userspace
-		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER))
+		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER) || src_port == htons(PORT_SUPERSET_SERVER))
 		{
 			skb_conn_inverse.src_ip = iph->daddr;
 			skb_conn_inverse.dst_ip = iph->saddr;
@@ -836,7 +838,7 @@ static int localout_hook_function(void *priv, struct sk_buff *skb, const struct 
 	tcph = tcp_hdr(skb);
 
 	// for packets from MITM userspace to client, disguise as the original server
-	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10))
+	if(tcph->source == htons(PORT_HTTP_SERVER*10) || tcph->source == htons(PORT_FTP_SERVER*10) || tcph->source == htons(PORT_SUPERSET_MITM))
 	{
 		if((conn_row = search_conn_table_by_dst(iph->daddr, tcph->dest)))
 		{

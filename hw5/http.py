@@ -49,7 +49,7 @@ class HTTPInspector(mitm.MITMInspector):
         
         return True
         
-
+        
 
 
 def main():
