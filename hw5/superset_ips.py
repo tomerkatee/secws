@@ -27,12 +27,11 @@ class SupersetInspector(mitm.MITMInspector):
         self.bad_packet = False
 
     def inspect_from_server(self, data, sock):
-        return True
         if(not super().inspect_from_server(data, sock)):
             return False
         
-        print("from server")
         return True
+
 
         global server_data_buffer
         server_data_buffer += data.decode('utf-8', errors='ignore')
@@ -41,24 +40,21 @@ class SupersetInspector(mitm.MITMInspector):
         for m in re.finditer(session_cookie_re_format, server_data_buffer):
             valid_session_cookies.add(m.group(1))
 
-        
-        print(valid_session_cookies)
+
+        return True
     
 
     def inspect_from_client(self, data, sock):
-        return True
         if(not super().inspect_from_client(data, sock)):
             return False
         
-        print("from client")
-
+        return True
         
         global client_data_buffer
         client_data_buffer += data.decode('utf-8', errors = 'ignore')
         client_data_buffer = client_data_buffer[-data_buffer_max_len:]
 
-        return True
-
+        print(len(valid_session_cookies))
 
         # this represents a new "innocent" packet
         if("Content-Type:" in client_data_buffer):
@@ -66,13 +62,16 @@ class SupersetInspector(mitm.MITMInspector):
 
         # if we are still in the same bad packet as before don't pass the data
         if(self.bad_packet):
+            print("dropped the rest of the bad packet")
             return False
     
         for m in re.finditer(session_cookie_re_format, client_data_buffer):
             if m.group(1) not in valid_session_cookies:
                 self.bad_packet = True
                 client_data_buffer = ""
+                print("dropped packet due to unknown session-cookie")
                 return False
+        
 
         return True
         

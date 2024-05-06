@@ -507,8 +507,13 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 {
 	struct tcphdr* tcp_header = tcp_hdr(skb);
 	int i;
-	int found = 0;
 	timeout_timer *curr;
+
+	if(tcp_header->rst)
+	{
+		conn_row->state = TCP_CLOSE;
+		return NF_ACCEPT;
+	}
 
 	switch (conn_row->state)
 	{
@@ -566,17 +571,14 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 								// found an expired timer of a connection row to be deleted
 								del_conn_row(curr->conn_row);
 							}
-							if(!found)
-							{
-								curr->conn_row = conn_row;
-								// set the timeout timer and after TIMEOUT_MILISECONDS, conn_row will be ready for deletion
-								mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));	
-								found = 1;
-							}
+							curr->conn_row = conn_row;
+							// set the timeout timer and after TIMEOUT_MILISECONDS, conn_row will be ready for deletion
+							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));
+							break;	
 						}
 					}
 					// if we didn't find an available timer, just close the connection row right now, don't wait for proper termination
-					if(!found)		
+					if(i == TIMEOUT_TIMERS_COUNT)		
 						conn_row->state = TCP_CLOSE;
 				}	
 				else
@@ -589,14 +591,13 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 			break;	
 
 		case TCP_FIN_WAIT1:
+		case TCP_TIME_WAIT:
 			if(tcp_header->ack)
 				conn_row->state = TCP_TIME_WAIT;
 			else
 				return NF_DROP;
 			break;
-		
-		case TCP_TIME_WAIT:
-			return NF_DROP;
+
 	}
 	return NF_ACCEPT;
 
@@ -618,7 +619,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	conn_row_sender = search_conn_table_by_conn(&skb_conn_sender);
 
 	// means that this packet is of an existing TCP connection
-	if(tcp_header->ack)
+	if(tcp_header->ack || tcp_header->rst)
 	{
 		if(conn_row_sender)
 		{
@@ -740,8 +741,7 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	conn_row_node *conn_row;
 	conn_t skb_conn_inverse;
 	
-
-
+ 
 	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) 
 	|| rule_match(&loopback_rule, skb) || iph->daddr == OUT_NET_IP_ADDR || iph->daddr == IN_NET_IP_ADDR)
 		return NF_ACCEPT;
@@ -756,6 +756,8 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 			goto post_decision;
 		}
 	}
+
+
 
 	// else, check with static rule table
 	if(is_xmas_packet(skb))

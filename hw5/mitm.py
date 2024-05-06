@@ -80,7 +80,7 @@ class MITMInspector():
 
         self.mitm_listen_socket.setblocking(False)
         self.mitm_listen_socket.bind(('', self.listen_port))
-        self.mitm_listen_socket.listen(10)
+        self.mitm_listen_socket.listen(20)
 
         self.sel.register(self.mitm_listen_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
         
@@ -108,6 +108,7 @@ class MITMInspector():
                                 sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
                                 self.sock_to_send_buff[sibling] += data
                         else:
+                            print("fuck" + str(sock.getsockname()[1]))
                             self.sel.unregister(sock)
                             sock.close()
                             self.sockets.remove(sock)
@@ -119,10 +120,13 @@ class MITMInspector():
                             if(len(data_to_send) > 0):
                                 sock.sendall(data_to_send)
                                 self.sock_to_send_buff[sock] = bytearray()
+                                print(len(data_to_send))
+                                print(data_to_send[-10:])
                             else:
                                 time.sleep(0.02) # this prevents a scenario of empty EVENT_WRITE's sucking too many CPU time
 
-                        except:
+                        except BlockingIOError:
+                            print("shit" + str(sock.getpeername()[1]))
                             self.sel.unregister(sock)
                             sock.close()
                             self.sockets.remove(sock)
