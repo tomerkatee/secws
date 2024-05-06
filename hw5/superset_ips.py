@@ -13,10 +13,11 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-data_buffer = ""
+server_data_buffer = ""
+client_data_buffer = ""
 data_buffer_max_len = mitm.BUFFER_SIZE*2
 superset_inspector = None
-valid_session_cookies = {}
+valid_session_cookies = set()
 session_cookie_re_format = r"session=([0-9a-zA-Z_\-.]+);"
 
 
@@ -26,11 +27,15 @@ class SupersetInspector(mitm.MITMInspector):
         self.bad_packet = False
 
     def inspect_from_server(self, data, sock):
+        return True
         if(not super().inspect_from_server(data, sock)):
             return False
+        
+        print("from server")
+        return True
 
         global server_data_buffer
-        server_data_buffer += data.decode('utf-8')
+        server_data_buffer += data.decode('utf-8', errors='ignore')
         server_data_buffer = server_data_buffer[-data_buffer_max_len:]
     
         for m in re.finditer(session_cookie_re_format, server_data_buffer):
@@ -41,12 +46,19 @@ class SupersetInspector(mitm.MITMInspector):
     
 
     def inspect_from_client(self, data, sock):
+        return True
         if(not super().inspect_from_client(data, sock)):
             return False
         
+        print("from client")
+
+        
         global client_data_buffer
-        client_data_buffer += data.decode('utf-8')
+        client_data_buffer += data.decode('utf-8', errors = 'ignore')
         client_data_buffer = client_data_buffer[-data_buffer_max_len:]
+
+        return True
+
 
         # this represents a new "innocent" packet
         if("Content-Type:" in client_data_buffer):

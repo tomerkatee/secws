@@ -168,7 +168,7 @@ def line_to_rule(line:str):
         return -1
     rule.name = fields[0].encode('utf-8')
 
-    print_error = lambda fname: print("The "+fname+" field is not valid in rule "+rule.name)
+    print_error = lambda fname: print("The "+fname+" field is not valid in rule \'"+rule.name.decode('utf-8')+"\'")
 
     
     # direction

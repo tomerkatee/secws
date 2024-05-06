@@ -6,5 +6,5 @@ telnet1 out 10.1.1.1/24 any TCP >1023 23 any accept
 telnet2 in any 10.1.1.1/24 TCP 23 >1023 yes accept
 http any any any TCP any 80 any accept
 ftp any any any TCP any 21 any accept
-superset any any any TCP any 8088 any accept
+superset any any any TCP any >1023 any accept
 default any any any any any any any drop
