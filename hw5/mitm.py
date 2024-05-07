@@ -8,7 +8,7 @@ import time
 path_to_mitm_attr = "/sys/class/fw/conns/mitm"
 mitm_update_format = "<I H H"
 mitm_get_server_format = "<I H"
-BUFFER_SIZE = 1024
+BUFFER_SIZE = 10240
 
 
 class MITMInspector():
@@ -96,19 +96,25 @@ class MITMInspector():
                     sock = key.fileobj
 
                     if mask & selectors.EVENT_READ:
-                        data = sock.recv(BUFFER_SIZE)
-
-                        # this line helps identify if the data came from a server or from a client
-                        res = self.client_to_mitm_client.get_key(sock)
-                    
-                        if data:
-                            inspection_ok = self.inspect_from_server(data, sock) if res != -1 else self.inspect_from_client(data, sock)
-                            # if data is ok, assign the data received to be sent to the client/server from the mitm socket
-                            if(inspection_ok):
-                                sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
-                                self.sock_to_send_buff[sibling] += data
-                        else:
-                            print("fuck" + str(sock.getsockname()[1]))
+                        try:
+                            data = sock.recv(BUFFER_SIZE)
+                            print("recv; window: "+ str(sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)))
+                            # this line helps identify if the data came from a server or from a client
+                            res = self.client_to_mitm_client.get_key(sock)
+                        
+                            if data:
+                                inspection_ok = self.inspect_from_server(data, sock) if res != -1 else self.inspect_from_client(data, sock)
+                                # if data is ok, assign the data received to be sent to the client/server from the mitm socket
+                                if(inspection_ok):
+                                    sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
+                                    self.sock_to_send_buff[sibling] += data
+                            else:
+                                self.sel.unregister(sock)
+                                sock.close()
+                                self.sockets.remove(sock)
+                            
+                        except ConnectionResetError:
+                            print("connection reset by peer")
                             self.sel.unregister(sock)
                             sock.close()
                             self.sockets.remove(sock)
@@ -118,15 +124,15 @@ class MITMInspector():
                         try:
                             data_to_send = bytes(self.sock_to_send_buff[sock])
                             if(len(data_to_send) > 0):
-                                sock.sendall(data_to_send)
-                                self.sock_to_send_buff[sock] = bytearray()
-                                print(len(data_to_send))
-                                print(data_to_send[-10:])
+                                sent = sock.send(data_to_send)
+                                self.sock_to_send_buff[sock] = self.sock_to_send_buff[sock][sent:]
+                                print("sent: " + str(sent))
+
                             else:
                                 time.sleep(0.02) # this prevents a scenario of empty EVENT_WRITE's sucking too many CPU time
 
                         except BlockingIOError:
-                            print("shit" + str(sock.getpeername()[1]))
+                            print("blocked" + str(sock.getpeername()[1]))
                             self.sel.unregister(sock)
                             sock.close()
                             self.sockets.remove(sock)
