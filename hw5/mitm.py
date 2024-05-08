@@ -9,7 +9,7 @@ path_to_mitm_attr = "/sys/class/fw/conns/mitm"
 mitm_update_format = "<I H H"
 mitm_get_server_format = "<I H"
 BUFFER_SIZE = 10240
-
+TIMEOUT = 7
 
 class MITMInspector():
     def __init__(self, port):
@@ -22,6 +22,7 @@ class MITMInspector():
         self.sock_to_send_buff = {}
         self.listen_port = port        
         self.sockets = [self.mitm_listen_socket]
+        self.socket_last_active = {}
         self.keep_running = True
 
     # accepts a new client connection and updates the connection table with MITM information using sysfs attributes
@@ -71,6 +72,11 @@ class MITMInspector():
         self.sock_to_send_buff[client_socket] = bytearray()
         self.sock_to_send_buff[mitm_client_socket] = bytearray()
 
+
+        now = time.time()
+        self.socket_last_active[client_socket] = now
+        self.socket_last_active[mitm_client_socket] = now
+
         # register the new sockets to our selector
         self.sel.register(client_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
         self.sel.register(mitm_client_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
@@ -108,6 +114,7 @@ class MITMInspector():
                             data = sock.recv(BUFFER_SIZE)
                         
                             if data:
+                                self.socket_last_active[sock] = time.time()
                                 # this line helps identify if the data came from a server or from a client
                                 res = self.client_to_mitm_client.get_key(sock)
                                 inspection_ok = self.inspect_from_server(data, sock) if res != -1 else self.inspect_from_client(data, sock)
@@ -132,10 +139,15 @@ class MITMInspector():
                         try:
                             data_to_send = bytes(self.sock_to_send_buff[sock])
                             if(len(data_to_send) > 0):
+                                self.socket_last_active[sock] = time.time()
                                 sent = sock.send(data_to_send)
                                 self.sock_to_send_buff[sock] = self.sock_to_send_buff[sock][sent:]
 
                             else:
+                                if (time.time() - self.socket_last_active[sock]) > TIMEOUT:
+                                    print("Timeout reached, shutting down socket")
+                                    self.shutdown_socket(sock)
+
                                 res = self.client_to_mitm_client.get_key(sock)
                                 sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
                                 # should throw exception in case sibling is disconnected
