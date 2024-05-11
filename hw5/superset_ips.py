@@ -28,7 +28,6 @@ class SupersetInspector(mitm.MITMInspector):
         self.bad_packet = False
 
     def inspect_from_server(self, data, sock):
-        return True
 
         if(not super().inspect_from_server(data, sock)):
             return False
@@ -45,7 +44,6 @@ class SupersetInspector(mitm.MITMInspector):
     
 
     def inspect_from_client(self, data, sock):
-        return True
         if(not super().inspect_from_client(data, sock)):
             return False
         
