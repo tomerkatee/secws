@@ -108,9 +108,46 @@ all_keywords = [
 
 MIN_STR_SIZE = 30
 TEST_RATIO = 0.2
+C_SCAN_CHUNK_SIZE = 50
 
-def train(strs: list):
-    pass
+def train(regular_responses_file, c_code_file="c_code.txt"):
+    regular_responses = response_scraper.scrape_responses(regular_responses_file)
+    # filter by size
+    regular_responses = [s for s in regular_responses if len(s) >= MIN_STR_SIZE]
+
+    with open(c_code_file, 'r') as file:
+        c_code_lines = file.readlines()
+    programs = split_into_programs(c_code_lines)
+
+    regular_responses_vectors = [list(token_fracs(r).values()) for r in regular_responses]
+    programs_vectors = [list(token_fracs(p).values()) for p in programs]
+            
+
+    random.shuffle(regular_responses_vectors)
+    random.shuffle(programs_vectors)
+    
+    end_test_prog = int(len(programs_vectors)*TEST_RATIO)
+    end_test_reg = int(len(regular_responses_vectors)*TEST_RATIO)
+
+    Y_reg = [0 for _ in regular_responses_vectors]
+    
+    Y_prog = [1 for _ in programs_vectors]
+
+    X_train = regular_responses_vectors[end_test_reg:] + programs_vectors[end_test_prog:]
+    Y_train = Y_reg[end_test_reg:] + Y_prog[end_test_prog:]
+
+    X_test = regular_responses_vectors[:end_test_reg] + programs_vectors[:end_test_prog]
+    Y_test = Y_reg[:end_test_reg] + Y_prog[:end_test_prog]
+
+    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+
+    clf = clf.fit(X_train, Y_train)
+
+    Y_pred = clf.predict(X_test)
+
+    print("Accuracy:", accuracy_score(Y_test, Y_pred))
+
+    return clf
 
 
 def split_into_programs(c_code_lines):
@@ -133,7 +170,7 @@ def split_into_programs(c_code_lines):
     return programs
 
 
-def token_fracs_truncated(s: str):
+def token_fracs(s: str):
     res = {}
     for t in list(symbol_names.keys())+keywords:
         res[t] = s.count(t) / len(s)
@@ -142,46 +179,27 @@ def token_fracs_truncated(s: str):
     return res
 
 
+def contains_c_code(clf, data):
+    is_c_code = lambda msg: clf.predict([list(token_fracs(msg).values())])[0] == 1
+
+
+    for i in range(0, len(data)//C_SCAN_CHUNK_SIZE+1):
+        chunk = data[i*C_SCAN_CHUNK_SIZE:(i+1)*C_SCAN_CHUNK_SIZE]
+        print(chunk)
+        if chunk and is_c_code(chunk):
+            print("whaaaaaaaaaaaaaat")
+
+
+    print(data)
+
+    return False
+
+
 def main():
-    HTTP_regular_responses = response_scraper.scrape_responses(sys.argv[1])
-    # filter by size
-    HTTP_regular_responses = [s for s in HTTP_regular_responses if len(s) >= MIN_STR_SIZE]
-
-    with open("c_code.txt", 'r') as file:
-        c_code_lines = file.readlines()
-    programs = split_into_programs(c_code_lines)
-
-    HTTP_regular_responses_vectors = [list(token_fracs_truncated(r).values()) for r in HTTP_regular_responses]
-    programs_vectors = [list(token_fracs_truncated(p).values()) for p in programs]
-            
-
-    random.shuffle(HTTP_regular_responses_vectors)
-    random.shuffle(programs_vectors)
-    
-    end_test_prog = int(len(programs_vectors)*TEST_RATIO)
-    end_test_reg = int(len(HTTP_regular_responses_vectors)*TEST_RATIO)
-
-    Y_reg = [0 for _ in HTTP_regular_responses_vectors]
-    
-    Y_prog = [1 for _ in programs_vectors]
-
-    X_train = HTTP_regular_responses_vectors[end_test_reg:] + programs_vectors[end_test_prog:]
-    Y_train = Y_reg[end_test_reg:] + Y_prog[end_test_prog:]
-
-    X_test = HTTP_regular_responses_vectors[:end_test_reg] + programs_vectors[:end_test_prog]
-    Y_test = Y_reg[:end_test_reg] + Y_prog[:end_test_prog]
-
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
-
-    clf = clf.fit(X_train, Y_train)
-
-    Y_pred = clf.predict(X_test)
-
-    print("Accuracy:", accuracy_score(Y_test, Y_pred))
-
+    clf = train()
 
     with open("test.txt", 'r') as file:
-        print(clf.predict([list(token_fracs_truncated(file.read()).values())]))
+        print(clf.predict([list(token_fracs(file.read()).values())]))
 
 
     export_graphviz(clf.estimators_[0], out_file='tree.dot', 

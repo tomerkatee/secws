@@ -2,6 +2,7 @@
 import mitm
 import signal
 import sys
+import classifier
 
 
 def signal_handler(sig, frame):
@@ -15,13 +16,14 @@ signal.signal(signal.SIGINT, signal_handler)
 data_buffer = ""
 data_buffer_max_len = mitm.BUFFER_SIZE*2
 http_inspector = None
-
+HTTP_REGULAR_RESPONSES_FILENAME = "www.offsec.com_Archive [24-05-09 12-37-19].har"
 
 
 class HTTPInspector(mitm.MITMInspector):
     def __init__(self):
         super().__init__(800)
         self.bad_packet = False
+        self.clf = classifier.train(HTTP_REGULAR_RESPONSES_FILENAME)
 
     def inspect_from_server(self, data, sock):
         global data_buffer
@@ -29,7 +31,8 @@ class HTTPInspector(mitm.MITMInspector):
         if(not super().inspect_from_server(data, sock)):
             return False
 
-        data_buffer += data.decode('utf-8')
+            
+        data_buffer += data.decode('utf-8', errors='ignore')
         data_buffer = data_buffer[-data_buffer_max_len:]
 
 
@@ -47,9 +50,13 @@ class HTTPInspector(mitm.MITMInspector):
             data_buffer = ""
             return False
         
-        return True
-        
-        
+        if classifier.contains_c_code(self.clf, data_buffer):
+            print("C code transfer detected, dropping packet!")
+            self.bad_packet = True
+            data_buffer = ""
+            return False    
+
+        return True    
 
 
 def main():
