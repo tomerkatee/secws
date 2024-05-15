@@ -1,14 +1,10 @@
-import response_scraper
+import request_scraper
 import sys
-from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import export_graphviz
 from sklearn.metrics import accuracy_score
 import random
 import subprocess
-
-
-
 
 
 all_symbol_names = {
@@ -108,35 +104,45 @@ all_keywords = [
 
 MIN_STR_SIZE = 30
 TEST_RATIO = 0.2
-C_SCAN_CHUNK_SIZE = 50
+C_SCAN_CHUNK_SIZE = 200
 
-def train(regular_responses_file, c_code_file="c_code.txt"):
-    regular_responses = response_scraper.scrape_responses(regular_responses_file)
-    # filter by size
-    regular_responses = [s for s in regular_responses if len(s) >= MIN_STR_SIZE]
+
+def split_to_chunks(s):
+    chunks = []
+    for i in range(0, len(s)//C_SCAN_CHUNK_SIZE+1):
+        chunks.append(s[i*C_SCAN_CHUNK_SIZE:(i+1)*C_SCAN_CHUNK_SIZE])
+
+    return chunks
+
+
+
+def train(regular_requests_file, c_code_file="c_code.txt"):
+    regular_requests = request_scraper.scrape_requests(regular_requests_file)
 
     with open(c_code_file, 'r') as file:
         c_code_lines = file.readlines()
     programs = split_into_programs(c_code_lines)
 
-    regular_responses_vectors = [list(token_fracs(r).values()) for r in regular_responses]
-    programs_vectors = [list(token_fracs(p).values()) for p in programs]
-            
+    c_chunks = [c for p in programs for c in split_to_chunks(p)]
+    regular_requests_chunks = [c for r in regular_requests for c in split_to_chunks(r)]
 
-    random.shuffle(regular_responses_vectors)
+    regular_requests_vectors = [list(token_fracs(r).values()) for r in regular_requests_chunks]
+    programs_vectors = [list(token_fracs(p).values()) for p in c_chunks]
+
+    random.shuffle(regular_requests_vectors)
     random.shuffle(programs_vectors)
     
     end_test_prog = int(len(programs_vectors)*TEST_RATIO)
-    end_test_reg = int(len(regular_responses_vectors)*TEST_RATIO)
+    end_test_reg = int(len(regular_requests_vectors)*TEST_RATIO)
 
-    Y_reg = [0 for _ in regular_responses_vectors]
+    Y_reg = [0 for _ in regular_requests_vectors]
     
     Y_prog = [1 for _ in programs_vectors]
 
-    X_train = regular_responses_vectors[end_test_reg:] + programs_vectors[end_test_prog:]
+    X_train = regular_requests_vectors[end_test_reg:] + programs_vectors[end_test_prog:]
     Y_train = Y_reg[end_test_reg:] + Y_prog[end_test_prog:]
 
-    X_test = regular_responses_vectors[:end_test_reg] + programs_vectors[:end_test_prog]
+    X_test = regular_requests_vectors[:end_test_reg] + programs_vectors[:end_test_prog]
     Y_test = Y_reg[:end_test_reg] + Y_prog[:end_test_prog]
 
     clf = RandomForestClassifier(n_estimators=100, random_state=42)
@@ -172,9 +178,9 @@ def split_into_programs(c_code_lines):
 
 def token_fracs(s: str):
     res = {}
-    for t in list(symbol_names.keys())+keywords:
-        res[t] = s.count(t) / len(s)
 
+    for t in list(symbol_names.keys())+keywords:
+        res[t] = s.count(t) / len(s) if len(s) else 0
 
     return res
 
@@ -182,15 +188,10 @@ def token_fracs(s: str):
 def contains_c_code(clf, data):
     is_c_code = lambda msg: clf.predict([list(token_fracs(msg).values())])[0] == 1
 
-
-    for i in range(0, len(data)//C_SCAN_CHUNK_SIZE+1):
-        chunk = data[i*C_SCAN_CHUNK_SIZE:(i+1)*C_SCAN_CHUNK_SIZE]
-        print(chunk)
-        if chunk and is_c_code(chunk):
-            print("whaaaaaaaaaaaaaat")
-
-
-    print(data)
+    for chunk in split_to_chunks(data):
+        if is_c_code(chunk):
+            print("this chunk is c code: " + chunk)
+            return True
 
     return False
 
