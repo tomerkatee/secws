@@ -18,7 +18,7 @@ server_data_buffer = ""
 client_data_buffer = ""
 data_buffer_max_len = mitm.BUFFER_SIZE*2
 http_inspector = None
-HTTP_REGULAR_RESPONSES_FILENAME = "www.offsec.com_Archive [24-05-09 12-37-19].har"
+HTTP_REGULAR_RESPONSES_FILENAME = "www.programiz.com_Archive [24-05-15 17-43-55].har.tmp"
 
 
 class HTTPInspector(mitm.MITMInspector):

@@ -813,7 +813,7 @@ post_decision:
 			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, modified_dest_port);
 		}
 		// divert packet from server to our userspace
-		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER) || src_port == htons(PORT_SUPERSET_SERVER))
+		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER) || src_port == htons(PORT_SUPERSET_SERVER)  || src_port == htons(PORT_SMTP_SERVER))
 		{
 			skb_conn_inverse.src_ip = iph->daddr;
 			skb_conn_inverse.dst_ip = iph->saddr;

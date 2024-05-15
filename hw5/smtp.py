@@ -35,7 +35,7 @@ class SMTPInspector(mitm.MITMInspector):
         client_data_buffer = client_data_buffer[-data_buffer_max_len:]
 
         # this represents a new "innocent" packet
-        if("Content-Type:" in client_data_buffer):
+        if("EHLO" in client_data_buffer):
             self.bad_packet = False
 
         # if we are still in the same bad packet as before don't pass the data

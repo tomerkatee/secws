@@ -5,7 +5,21 @@ from sklearn.tree import export_graphviz
 from sklearn.metrics import accuracy_score
 import random
 import subprocess
+import re
 
+c_patterns = {
+    'if_else_statement': r'if\s*\([^)]*\)\s*{[^{}]*}(?:\s*else\s*{[^{}]*})?',
+    'while_statement': r'while\s*\([^)]*\)\s*{[^{}]*}',
+    'do_while_statement': r'do\s*{[^{}]*}\s*while\s*\([^)]*\)\s*;',
+    'switch_statement': r'switch\s*\([^)]*\)\s*{[^{}]*}',
+    'case_label': r'case\s+[^:]+:',
+    'default_label': r'default\s*:',
+    'function_declaration': r'\b\w+\s+\w+\s*\([^)]*\)\s*',
+    'struct_declaration': r'struct\s+[A-Za-z_][A-Za-z0-9_]*\s*{[^{}]*};',
+    'typedef_declaration': r'typedef\s+.*?;',
+    'macro_definition': r'#define\s+\w+\s+.*',
+    'comment': r'(\/\/.*$|\/\*[\s\S]*?\*\/)',  # Matches single-line and multi-line comments
+}
 
 all_symbol_names = {
     '+': 'plus',
@@ -102,7 +116,7 @@ all_keywords = [
     'sizeof', 'typedef', 'enum', 'struct', 'union',   # Miscellaneous keywords
 ]
 
-MIN_STR_SIZE = 30
+MIN_STR_SIZE = 100
 TEST_RATIO = 0.2
 C_SCAN_CHUNK_SIZE = 200
 
@@ -179,6 +193,9 @@ def split_into_programs(c_code_lines):
 def token_fracs(s: str):
     res = {}
 
+    for k, v in c_patterns.items():
+        res[k] = len(re.findall(v, s)) / len(s) if len(s) else 0
+
     for t in list(symbol_names.keys())+keywords:
         res[t] = s.count(t) / len(s) if len(s) else 0
 
@@ -186,7 +203,7 @@ def token_fracs(s: str):
 
 
 def contains_c_code(clf, data):
-    is_c_code = lambda msg: clf.predict([list(token_fracs(msg).values())])[0] == 1
+    is_c_code = lambda msg: len(msg) > MIN_STR_SIZE and clf.predict([list(token_fracs(msg).values())])[0] == 1
 
     for chunk in split_to_chunks(data):
         if is_c_code(chunk):
