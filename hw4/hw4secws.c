@@ -32,9 +32,10 @@ typedef __be16 port_t;
 #define PORT_FTP_DATA_CONNECTION_SERVER 20
 #define IN_NET_IP_ADDR 50397450
 #define OUT_NET_IP_ADDR 50462986
-#define TIMEOUT_TIMERS_COUNT 8
+#define TIMEOUT_TIMERS_COUNT 100
 #define TIMEOUT_MILISECONDS 10000
 #define DEVICE_NAME_CONNS "conns"
+
 
 #define subnet_prefix_size_to_mask(size) ((size)==sizeof(ip_t)*8 ? -1 : (1 << (size))-1)
 
@@ -506,6 +507,12 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 	int i;
 	timeout_timer *curr;
 
+	if(tcp_header->rst)
+	{
+		conn_row->state = TCP_CLOSE;
+		return NF_ACCEPT;
+	}
+
 	switch (conn_row->state)
 	{
 		case TCP_CLOSE:
@@ -551,7 +558,7 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 				if(tcp_header->fin)
 				{
 					conn_row->state = TCP_FIN_WAIT1;
-					// try finding an available timeout timer
+					// try finding an available timeout timer, and cleanup finished timers
 					for (i = 0; i < TIMEOUT_TIMERS_COUNT; i++)
 					{
 						curr = &timeout_timers[i];
@@ -562,11 +569,10 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 								// found an expired timer of a connection row to be deleted
 								del_conn_row(curr->conn_row);
 							}
-
 							curr->conn_row = conn_row;
 							// set the timeout timer and after TIMEOUT_MILISECONDS, conn_row will be ready for deletion
-							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));	
-							break;
+							mod_timer(&timeout_timers[i].timer, jiffies + msecs_to_jiffies(TIMEOUT_MILISECONDS));
+							break;	
 						}
 					}
 					// if we didn't find an available timer, just close the connection row right now, don't wait for proper termination
@@ -583,14 +589,13 @@ static int handle_packet_by_conn_row(struct sk_buff *skb, conn_row_node* conn_ro
 			break;	
 
 		case TCP_FIN_WAIT1:
+		case TCP_TIME_WAIT:
 			if(tcp_header->ack)
 				conn_row->state = TCP_TIME_WAIT;
 			else
 				return NF_DROP;
 			break;
-		
-		case TCP_TIME_WAIT:
-			return NF_DROP;
+
 	}
 	return NF_ACCEPT;
 
@@ -612,7 +617,7 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 	conn_row_sender = search_conn_table_by_conn(&skb_conn_sender);
 
 	// means that this packet is of an existing TCP connection
-	if(tcp_header->ack)
+	if(tcp_header->ack || tcp_header->rst)
 	{
 		if(conn_row_sender)
 		{
@@ -649,7 +654,6 @@ static int handle_by_conn_tab(struct sk_buff *skb)
 
 		}	
 		result = handle_packet_by_conn_row(skb, conn_row_sender);
-		
 		goto post_result;
 	}
 
@@ -730,26 +734,28 @@ static int prert_hook_function(void *priv, struct sk_buff *skb, const struct nf_
 	u_int8_t packet_prot = iph->protocol;
 	reason_t reason;
 	u_int8_t action = NO_DECISION;
-	port_t src_port, dest_port;
+	port_t src_port, dest_port, modified_dest_port;
 	ip_t my_addr;
 	conn_row_node *conn_row;
 	conn_t skb_conn_inverse;
 	
-
-
-	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) || rule_match(&loopback_rule, skb))
+ 
+	if((iph->version != 4) || (packet_prot != PROT_UDP && packet_prot != PROT_ICMP && packet_prot != PROT_TCP) 
+	|| rule_match(&loopback_rule, skb) || iph->daddr == OUT_NET_IP_ADDR || iph->daddr == IN_NET_IP_ADDR)
 		return NF_ACCEPT;
 
 	// if packet is TCP and ACK is set (or came from port 20, which is ftp data connection), manage with connection table
 	if(packet_prot == PROT_TCP)
 	{
-		if(tcp_hdr(skb)->ack || tcp_hdr(skb)->source == htons(PORT_FTP_DATA_CONNECTION_SERVER))
+		if(tcp_hdr(skb)->ack || tcp_hdr(skb)->rst || tcp_hdr(skb)->source == htons(PORT_FTP_DATA_CONNECTION_SERVER))
 		{
 			action = handle_by_conn_tab(skb);
 			reason = action == NF_DROP ? REASON_ILLEGAL_VALUE : REASON_EXISTING_TCP_CONNECTION;
 			goto post_decision;
 		}
 	}
+
+
 
 	// else, check with static rule table
 	if(is_xmas_packet(skb))
@@ -800,7 +806,8 @@ post_decision:
 		// divert packet from client to our userspace
 		if(dest_port == htons(PORT_HTTP_SERVER) || dest_port == htons(PORT_FTP_SERVER))
 		{
-			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, htons(ntohs(dest_port)*10));
+			modified_dest_port = htons(ntohs(dest_port)*10);
+			set_packet_fields(skb, iph->saddr, tcph->source, my_addr, modified_dest_port);
 		}
 		// divert packet from server to our userspace
 		if(src_port == htons(PORT_HTTP_SERVER) || src_port == htons(PORT_FTP_SERVER))

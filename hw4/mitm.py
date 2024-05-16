@@ -8,8 +8,8 @@ import time
 path_to_mitm_attr = "/sys/class/fw/conns/mitm"
 mitm_update_format = "<I H H"
 mitm_get_server_format = "<I H"
-BUFFER_SIZE = 1024
-
+BUFFER_SIZE = 10240
+TIMEOUT = 30
 
 class MITMInspector():
     def __init__(self, port):
@@ -22,6 +22,7 @@ class MITMInspector():
         self.sock_to_send_buff = {}
         self.listen_port = port        
         self.sockets = [self.mitm_listen_socket]
+        self.socket_last_active = {}
         self.keep_running = True
 
     # accepts a new client connection and updates the connection table with MITM information using sysfs attributes
@@ -52,7 +53,15 @@ class MITMInspector():
             server_port = convert_to_little_end_port(server_addr_unformatted[1])
 
         # connect to the server instead of the client - Man in the Middle
-        mitm_client_socket.connect((server_ip, server_port))
+        try:
+            mitm_client_socket.connect((server_ip, server_port))
+
+        except ConnectionRefusedError:
+            print("Connection refused by the server")
+            self.shutdown_socket(mitm_client_socket)
+            self.shutdown_socket(client_socket)
+            return 
+        
         self.sockets.append(mitm_client_socket)
 
         client_socket.setblocking(False)
@@ -62,6 +71,11 @@ class MITMInspector():
 
         self.sock_to_send_buff[client_socket] = bytearray()
         self.sock_to_send_buff[mitm_client_socket] = bytearray()
+
+
+        now = time.time()
+        self.socket_last_active[client_socket] = now
+        self.socket_last_active[mitm_client_socket] = now
 
         # register the new sockets to our selector
         self.sel.register(client_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
@@ -80,7 +94,7 @@ class MITMInspector():
 
         self.mitm_listen_socket.setblocking(False)
         self.mitm_listen_socket.bind(('', self.listen_port))
-        self.mitm_listen_socket.listen(10)
+        self.mitm_listen_socket.listen(20)
 
         self.sel.register(self.mitm_listen_socket, selectors.EVENT_READ | selectors.EVENT_WRITE)
         
@@ -96,40 +110,65 @@ class MITMInspector():
                     sock = key.fileobj
 
                     if mask & selectors.EVENT_READ:
-                        data = sock.recv(BUFFER_SIZE)
-
-                        # this line helps identify if the data came from a server or from a client
-                        res = self.client_to_mitm_client.get_key(sock)
-                    
-                        if data:
-                            inspection_ok = self.inspect_from_server(data, sock) if res != -1 else self.inspect_from_client(data, sock)
-                            # if data is ok, assign the data received to be sent to the client/server from the mitm socket
-                            if(inspection_ok):
+                        try:
+                            data = sock.recv(BUFFER_SIZE)
+                        
+                            if data:
+                                self.socket_last_active[sock] = time.time()
+                                # this line helps identify if the data came from a server or from a client
+                                res = self.client_to_mitm_client.get_key(sock)
+                                inspection_ok = self.inspect_from_server(data, sock) if res != -1 else self.inspect_from_client(data, sock)
                                 sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
-                                self.sock_to_send_buff[sibling] += data
-                        else:
-                            self.sel.unregister(sock)
-                            sock.close()
-                            self.sockets.remove(sock)
+                                # if data is ok, assign the data received to be sent to the client/server from the mitm socket
+                                if(inspection_ok):
+                                    self.sock_to_send_buff[sibling] += data
+                                else:
+                                    self.shutdown_socket(sock)
+                                    self.shutdown_socket(sibling)
+
+                            else:
+                                self.shutdown_socket(sock)
+
+                            
+                        except ConnectionResetError:
+                            print("connection reset by peer")
+                            self.shutdown_socket(sock)
                         
 
                     elif mask & selectors.EVENT_WRITE:
                         try:
                             data_to_send = bytes(self.sock_to_send_buff[sock])
                             if(len(data_to_send) > 0):
-                                sock.sendall(data_to_send)
-                                self.sock_to_send_buff[sock] = bytearray()
-                            else:
-                                time.sleep(0.02) # this prevents a scenario of empty EVENT_WRITE's sucking too many CPU time
+                                self.socket_last_active[sock] = time.time()
+                                sent = sock.send(data_to_send)
+                                self.sock_to_send_buff[sock] = self.sock_to_send_buff[sock][sent:]
 
-                        except:
-                            self.sel.unregister(sock)
-                            sock.close()
-                            self.sockets.remove(sock)
+                            else:
+                                if (time.time() - self.socket_last_active[sock]) > TIMEOUT:
+                                    print("Timeout reached, shutting down socket")
+                                    self.shutdown_socket(sock)
+
+                                res = self.client_to_mitm_client.get_key(sock)
+                                sibling = res if res != -1 else self.client_to_mitm_client.get_value(sock)
+                                # should throw exception in case sibling is disconnected
+                                sibling.getpeername()
+
+                                time.sleep(0.001) # this prevents a scenario of empty EVENT_WRITE's sucking too many CPU time
+
+                        except OSError:
+                            print("shutting down sibling-disconnected socket")
+                            self.shutdown_socket(sock)
 
         self.sel.close()
         self.close_sockets()
 
+    def shutdown_socket(self, sock):
+        try:
+            self.sel.unregister(sock)
+            sock.close()
+            self.sockets.remove(sock)
+        except:
+            pass
 
     def close_sockets(self):
         print("closing sockets")
