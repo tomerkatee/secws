@@ -29,7 +29,7 @@ class HTTPInspector(mitm.MITMInspector):
         if(not super().inspect_from_server(data, sock)):
             return False
 
-        data_buffer += data.decode('utf-8')
+        data_buffer += data.decode('utf-8', errors='ignore')
         data_buffer = data_buffer[-data_buffer_max_len:]
 
 
