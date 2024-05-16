@@ -7,19 +7,7 @@ import random
 import subprocess
 import re
 
-c_patterns = {
-    'if_else_statement': r'if\s*\([^)]*\)\s*{[^{}]*}(?:\s*else\s*{[^{}]*})?',
-    'while_statement': r'while\s*\([^)]*\)\s*{[^{}]*}',
-    'do_while_statement': r'do\s*{[^{}]*}\s*while\s*\([^)]*\)\s*;',
-    'switch_statement': r'switch\s*\([^)]*\)\s*{[^{}]*}',
-    'case_label': r'case\s+[^:]+:',
-    'default_label': r'default\s*:',
-    'function_declaration': r'\b\w+\s+\w+\s*\([^)]*\)\s*',
-    'struct_declaration': r'struct\s+[A-Za-z_][A-Za-z0-9_]*\s*{[^{}]*};',
-    'typedef_declaration': r'typedef\s+.*?;',
-    'macro_definition': r'#define\s+\w+\s+.*',
-    'comment': r'(\/\/.*$|\/\*[\s\S]*?\*\/)',  # Matches single-line and multi-line comments
-}
+
 
 all_symbol_names = {
     '+': 'plus',
@@ -99,10 +87,12 @@ symbol_names = {
     '#': 'hash',
 }
 
+types = ['int', 'char', 'float', 'double', 'void', 'long', 'short']
+
 keywords = [
     'static', 'extern',   # Storage class specifiers
     'int', 'char', 'float', 'double', 'void', 'long', 'short',  # Data type specifiers
-    'if', 'else', 'switch', 'case', 'while', 'do', 'for', 'break', 'continue', 'return', 'goto',   # Control flow keywords
+    'break', 'continue', 'return', 'goto',   # Control flow keywords
     'const',  # Type qualifiers
     'sizeof', 'typedef', 'enum', 'struct',  # Miscellaneous keywords
 ]
@@ -115,6 +105,22 @@ all_keywords = [
     'const', 'volatile', 'restrict',   # Type qualifiers
     'sizeof', 'typedef', 'enum', 'struct', 'union',   # Miscellaneous keywords
 ]
+
+
+c_patterns = {
+    'if_statement': r'if\s*\([^)]*\)\s*{',
+    'else_statement': r'else\s*{',
+    'while_statement': r'while\s*\([^)]*\)\s*{',
+    'do_statement': r'do\s*{',
+    'switch_statement': r'switch\s*\([^)]*\)\s*{[^{}]*}',
+    'case_label': r'case\s+[^:]+:',
+    'default_label': r'default\s*:',
+    'function_declaration': r'(?:int|void|double|float)\s+\w+\s*\([^)]*\)\s*',
+    'struct_declaration': r'struct\s+[A-Za-z_][A-Za-z0-9_]*\s*{[^{}]*};',
+    'typedef_declaration': r'typedef\s+.*?;',
+    'macro_definition': r'#define\s+\w+\s+.*',
+    'comment': r'(\/\/.*$|\/\*[\s\S]*?\*\/)',  # Matches single-line and multi-line comments
+}
 
 MIN_STR_SIZE = 100
 TEST_RATIO = 0.2

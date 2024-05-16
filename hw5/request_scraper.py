@@ -15,6 +15,8 @@ def scrape_requests(filename):
         entries = fields["log"]["entries"]
         for e in entries:
             request = e["request"]
+            res.append(request["url"])
+
             for h in request["headers"]:
                 res.append(h["name"])
                 res.append(h["value"])
@@ -35,6 +37,17 @@ def scrape_requests(filename):
                 for p in postData["params"]:
                     res.append(p["name"])
                     res.append(p["value"]) 
+
+            response = e["response"]
+            for h in response["headers"]:
+                res.append(h["name"])
+                res.append(h["value"])
+
+            if "content" in response:
+                content = response["content"]
+                if "text" in content:
+                    res.append(content["text"])
+
 
         return res
 
