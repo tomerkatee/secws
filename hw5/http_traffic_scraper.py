@@ -1,5 +1,4 @@
 import sys
-import re
 import json
 
 
@@ -47,7 +46,6 @@ def scrape_requests(filename):
                 content = response["content"]
                 if "text" in content:
                     res.append(content["text"])
-
 
         return res
 

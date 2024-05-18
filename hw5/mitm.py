@@ -9,7 +9,7 @@ path_to_mitm_attr = "/sys/class/fw/conns/mitm"
 mitm_update_format = "<I H H"
 mitm_get_server_format = "<I H"
 BUFFER_SIZE = 10240
-TIMEOUT = 7
+TIMEOUT = 15
 
 class MITMInspector():
     def __init__(self, port):
@@ -123,6 +123,7 @@ class MITMInspector():
                                 if(inspection_ok):
                                     self.sock_to_send_buff[sibling] += data
                                 else:
+                                    print("Bad traffic detected, closing connection!")
                                     self.shutdown_socket(sock)
                                     self.shutdown_socket(sibling)
 
@@ -156,7 +157,6 @@ class MITMInspector():
                                 time.sleep(0.001) # this prevents a scenario of empty EVENT_WRITE's sucking too many CPU time
 
                         except OSError:
-                            print("shutting down sibling-disconnected socket")
                             self.shutdown_socket(sock)
 
         self.sel.close()

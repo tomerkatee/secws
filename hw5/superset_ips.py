@@ -51,8 +51,6 @@ class SupersetInspector(mitm.MITMInspector):
         client_data_buffer += data.decode('utf-8', errors = 'ignore')
         client_data_buffer = client_data_buffer[-data_buffer_max_len:]
 
-        print(len(valid_session_cookies))
-    
         for m in re.finditer(session_cookie_re_format, client_data_buffer):
             if m.group(1) not in valid_session_cookies:
                 client_data_buffer = ""

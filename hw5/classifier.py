@@ -1,4 +1,4 @@
-import request_scraper
+import http_traffic_scraper
 import sys
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import export_graphviz
@@ -137,7 +137,7 @@ def split_to_chunks(s):
 
 
 def train(regular_requests_file, c_code_file="c_code.txt"):
-    regular_requests = request_scraper.scrape_requests(regular_requests_file)
+    regular_requests = http_traffic_scraper.scrape_requests(regular_requests_file)
 
     with open(c_code_file, 'r') as file:
         c_code_lines = file.readlines()
