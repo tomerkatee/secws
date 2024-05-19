@@ -1,67 +1,25 @@
-All the module's c code lies in the hw4secws.c file. fw.h remains unchanged and there are no extra files.
-I implemented MITM functionality inside mitm.py, which ftp.py and http.py use.
-Notice that mitm.pt, http.py and ftp.py use code from main.py so they have to be at the same folder in execution.
+The following files are based on hw4 and haven't seen significant changes:
+
+1. hw5secws.c
+2. mitm.py
+3. Makefile
+4. ftp.py
 
 
+classifier.py - a module that supports the creation of a random forest using sklearn module
+and data from given files.
 
-hw4secws.c explanations:
+http.py: added C code detection for HTTP traffic using classifier.py
+smtp.py: added C code detection for SMTP traffic using classifier.py
 
-this file has both firewall logic and data structure implementations.
-it contains all the rules and log management from hw3, and now also manages connection table and MITM.
+c_code.txt - a dataset of about 200 C programs. taken from kaggle.com (C programs)
 
-connection table:
+*.har file - HTTP traffic recorded with Firefox browser. contains both requests and responses that I have made with my browser.
 
-The connection table's rows are kept in a klist (kernel linked list implemntation),
-and are quickly accessed via a hash table (using hashtable.h linux implementation).
-
-Each row consists of: srcIP, dstIP, srcPort, dstPort, mitm_src_port.
-The mitm_src_port entry represents the port that is used by our machine to inspect the data flow
-in an ftp or http connection for that specific client/server connection.
-In case of a regular (non ftp/http) connection this field is ignored.
+http_traffic_scraper.py - a module that takes an .har file and extracts all valuable strings from it.
 
 
-Drivers and sysfs Attributes:
-
-conns - this attribute represents the connection table content. When read from userspace, it simply iterates over the connection table klist
-and copies all connection rows into the user's buffer.
-
-mitm - this attribute helps userspace programs to set a MITM infrastructure by interfacing with the connection table.
-When writing to it, the userspace program gives it a port and a client address, that will then be inserted into the client's row
-in the connection table as a mitm_src_port.
-When reading from it, it returns the server address from the aforementioned client row.
-Notice that for reasonable use, it is required from a userspace MITM program to write and immediately read from the mitm attribute,
-else reading will give the wrong client's server address.
-
-add_conn - this attribute helps adding an FTP data connection into the connection table. when writing to it from userspace, it takes
-a client address and a server address and inserts a matching connection row into the table.
-
-
-Packet Handling:
-
-The module contains 2 hooks:
-
-1. pre-routing hook: packet that are caught in this hook are checked against the static rule table or, for existing TCP connections
-(and FTP data connections), against the connection table.
-In this hook, the connection table also updates itself and MITM packet-field changes are made.
-
-2. local-out hook: used for spoofing the source of outgoing packets from http.py and ftp.py so that the client and the server won't notice the MITM.
-
-
-Userspace Programs:
-
-main.py: same as in hw3, except for adding show_conns.
-
-mitm.py: this file is in charge of managing multiple MITM connections concurrently.
-It uses python's selector module in order to manage multiple socket WRITE and READ events.
-It has a socket listening on a port (800 for http.py, and 210 for ftp.py), and when a client connects to a server, our module diverts
-the connection into that listening socket and they connect. Afterwards mitm.py update the connection table and starts a connection
-with the original server. After that the client and the server communicate through mitm.py and it inspects the data transmitted on the fly.
-When mitm.py finds a data that does not pass inspection it drops the data, not letting it pass through.
-
-http.py: this file uses mitm.py and only overrides the inspection logic. Given data from the server, the inspector looks for "Content Type: text/csv" or
-"application/zip" and if they appear it drops the data. It also remembers to drop all data afterwards until it sees a new "Content Type:"
-substring, indicating of a new "innocent" packet.
-
-ftp.py: this file also uses mitm.py and only overrides the inspection logic. Given data from the client, the inspector looks for PORT commands
-using regular expressions implementation in the 're' module of python. Upon finding a PORT command, it updates the connection table accordingly
-using the add_conn sysfs attribute of our module.
+superset_ips.py - the IPS system that prevents the Metasploit Superset Cookie RCE from working.
+Extracts session cookies that are sent by the Apache Superset server and keeps them in a python set.
+When a client sends a cookie, if it's not in the set, superset_ips.py drops the packet and closes the connection
+because the cookie might have been maliciously forged (more information in the presentation).

@@ -18,14 +18,14 @@ server_data_buffer = ""
 client_data_buffer = ""
 data_buffer_max_len = mitm.BUFFER_SIZE*2
 http_inspector = None
-HTTP_REGULAR_REQUESTS_FILENAME = "www.programiz.com_Archive [24-05-15 17-43-55].har.tmp"
+HTTP_REGULAR_TRAFFIC_FILENAME = "www.programiz.com_Archive [24-05-15 17-43-55].har.tmp"
 
 
 class HTTPInspector(mitm.MITMInspector):
     def __init__(self):
         super().__init__(800)
         self.bad_packet = False
-        self.clf = classifier.train(HTTP_REGULAR_REQUESTS_FILENAME)
+        self.clf = classifier.train(HTTP_REGULAR_TRAFFIC_FILENAME)
 
     def inspect_from_server(self, data, sock):
         global server_data_buffer

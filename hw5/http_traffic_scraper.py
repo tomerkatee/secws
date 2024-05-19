@@ -3,10 +3,10 @@ import json
 
 
 def main():
-    strs = scrape_requests(sys.argv[1])
+    strs = scrape_traffic(sys.argv[1])
     print(len(strs))
 
-def scrape_requests(filename): 
+def scrape_traffic(filename): 
     res = []
 
     with open(filename, 'r') as file:
