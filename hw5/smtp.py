@@ -3,6 +3,7 @@ import mitm
 import signal
 import sys
 import classifier
+import ipaddress
 
 
 def signal_handler(sig, frame):
@@ -17,6 +18,8 @@ client_data_buffer = ""
 data_buffer_max_len = mitm.BUFFER_SIZE*2
 smtp_inspector = None
 HTTP_REGULAR_TRAFFIC_FILENAME = "www.programiz.com_Archive [24-05-15 17-43-55].har.tmp"
+internal_subnet = ipaddress.IPv4Network('10.1.1.0/24')
+
 
 
 class SMTPInspector(mitm.MITMInspector):
@@ -42,7 +45,9 @@ class SMTPInspector(mitm.MITMInspector):
         if(self.bad_packet):
             return False
         
-        if classifier.contains_c_code(self.clf, client_data_buffer):
+        client_ip = ipaddress.IPv4Address(sock.getpeername()[0])
+        
+        if client_ip in internal_subnet and classifier.contains_c_code(self.clf, client_data_buffer):
             print("C code transfer detected, dropping packet!")
             self.bad_packet = True
             client_data_buffer = ""
